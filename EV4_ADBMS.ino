@@ -29,68 +29,52 @@ void setup(){
   digitalWrite(CS, HIGH);
   SPI.begin();
   SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  
+
 
 }
 
 void loop(){
+  uint16_t command = ADCV;
   while(1){
-    measure_voltage();
-    delay(2000);
+
+    uint8_t return_data = 0;
+    send_command(command);
+    while(return_data == 0){
+      return_data = SPI.transfer(0xFF);
+    }
+
+    Serial.println("Finished ADC conversion");
+    digitalWrite(CS, HIGH);
+
+    Serial.print("ADCV Return Data: ");
+    Serial.println(return_data, HEX);
+
+/*
+    for(uint8_t i = 2; i < 6; i++){
+      Serial.print("Response ");
+      Serial.print(i);
+      Serial.print(": ");
+      Serial.println(SPI.transfer(0xFF));
+    }
+*/
+
+    send_command(RDCVA);
+    for(uint8_t i = 0; i < 10; i++){
+      Serial.print("Response ");
+      Serial.print(i);
+      Serial.print(": ");
+      Serial.println(SPI.transfer(0xFF));
+    }
+
+
+
+    digitalWrite(CS, HIGH);
+    delay(5000);
   }
+
 }
 
-
-void measure_voltage() {  //18 millisecond execution time
-  uint8_t response[num_boards][6];
-  uint16_t cell_comm[6] = { RDCVA, RDCVB, RDCVC, RDCVD, RDCVE, RDCVF };  //read cell voltage registers A through E commands
-
-  poll_ADC(ADCV, 0);  //initiate and wait for voltage measurement
-
-  pack_voltage = 0;
-  for (int i = 0; i * 3 < num_cells; i++) {  //i: cell group
-    //Serial.print('i');
-    //Serial.println(i);
-    uint16_t curr_comm = cell_comm[i];  //each command reads a sequential set of three cells from each board
-    read_register_group(curr_comm, response);
-    for (int j = 0; j < num_boards; j++) {  //j:board number
-      //Serial.print('j');
-      //Serial.println(j);
-      for (int k = 0; k < 3 && i * 3 + k < num_cells; k++) {                                                         //cell number within register group
-                                                                                                                     //Serial.print('k');
-                                                                                                                     //Serial.println(k);
-        cell_voltage[j][i * 3 + k] = (float)(((uint8_t)response[j][k * 2 + 1] << 8) | response[j][k * 2]) * 0.0001;  //LSB represents 100 uV
-        pack_voltage = pack_voltage + cell_voltage[j][i * 3 + k];
-      }
-    }
-  }
-
-  /*
-  if (current < 0.2 and current > -0.2) {
-    for (int i = 0; i < num_boards; ++i) {
-      for (int j = 0; j < num_cells; ++j) {
-        open_circuit_voltage[i][j] = cell_voltage[i][j];
-      }
-    }
-  }
-  */
-
-  // new_voltage = true;
-
-  if (debug) {
-    Serial.println("Voltages:");
-    int g = 0;
-    for (int i = 0; i < num_boards; i++) {
-      Serial.print("board: ");
-      Serial.println(i + 1);
-      for (int j = 0; j < num_cells; j++) {
-        Serial.print(cell_voltage[i][j]);
-        Serial.print(" ");
-        g++;
-      }
-      Serial.println("");
-    }
-  }
-}
 
 void read_register_group(uint16_t command, uint8_t response[num_boards][6]) {  //register group is always 6 bytes
 
@@ -167,6 +151,15 @@ void send_command(uint16_t command) {
   SPI.transfer(cmd1);
   SPI.transfer(pec0);
   SPI.transfer(pec1);
+
+  Serial.print("Sent command 0x");
+  Serial.println(command);
+  Serial.print("pec0: ");
+  Serial.println(pec0, HEX);
+  Serial.print("pec1 ");
+  Serial.println(pec1, HEX);
+
+
 }
 
 void poll_ADC(uint16_t command, bool curr_measure) {
