@@ -5,7 +5,7 @@
 
 #include <stdint.h>
 
-bool debug = 0;
+bool debug = 1;
 
 //Safe operating conditions
 const float max_temp = 60;
@@ -13,12 +13,13 @@ const float min_temp = 0;
 const float OV = 4.20;       //over-voltage limit (spelled with an "oh" not zero) (V)
 const float UV = 2.5;       //under-voltage limit (V)
 const float max_diff = 1.7;   //max difference between min and max cell for open parallel cell detection
-const int watchdog_timeout = 10;  //watchdog timeout (in seconds). setting to 0 will DISABLE timer. Watchdog timer must be grester thatn 6 secibds
+const int watchdog_timeout = 0;
+//const int watchdog_timeout = 10;  //watchdog timeout (in seconds). setting to 0 will DISABLE timer. Watchdog timer must be grester thatn 6 secibds
 
 //architecture
-const int num_boards = 5;
-const int num_cells = 17;       //cells per board
-const int num_parrallel = 3;
+const int num_boards = 1;
+const int num_cells = 16;       //cells per board
+const int num_parrallel = 4;
 
 //BMS operation mode. Leave as empty string to determine mode during runtime
 String mode = "";     //"", "charge", "standby", "drive", "debug"
