@@ -29,52 +29,74 @@ void setup(){
   digitalWrite(CS, HIGH);
   SPI.begin();
   SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
-  
-
 
 }
 
 void loop(){
-  uint16_t command = ADCV;
   while(1){
-
-    uint8_t return_data = 0;
-    send_command(command);
-    while(return_data == 0){
-      return_data = SPI.transfer(0xFF);
-    }
-
-    Serial.println("Finished ADC conversion");
-    digitalWrite(CS, HIGH);
-
-    Serial.print("ADCV Return Data: ");
-    Serial.println(return_data, HEX);
-
-/*
-    for(uint8_t i = 2; i < 6; i++){
-      Serial.print("Response ");
-      Serial.print(i);
-      Serial.print(": ");
-      Serial.println(SPI.transfer(0xFF));
-    }
-*/
-
-    send_command(RDCVA);
-    for(uint8_t i = 0; i < 10; i++){
-      Serial.print("Response ");
-      Serial.print(i);
-      Serial.print(": ");
-      Serial.println(SPI.transfer(0xFF));
-    }
-
-
-
-    digitalWrite(CS, HIGH);
-    delay(5000);
+    measure_voltage();
+    delay(500);
   }
 
 }
 
+void measure_voltage() {  //18 millisecond execution time
+  uint8_t response[num_boards][6];
+  uint16_t cell_comm[6] = { RDCVA, RDCVB, RDCVC, RDCVD, RDCVE, RDCVF };  //read cell voltage registers A through E commands
+
+  ////cell voltage measurement algorithm outlined in INTERNAL PROTECTION AND FILTERING section of LTC6813 datasheet////
+  //poll_ADC(ADCV | 0b1);   //measure cells 1,7,13 to allow MUX voltage to settle
+  //delay(cell_RC * 6);
+
+  poll_ADC(ADCV, 0);  //initiate and wait for voltage measurement
+
+  pack_voltage = 0;
+  for (int i = 0; i * 3 < num_cells; i++) {  //i: cell group
+    //Serial.print('i');
+    //Serial.println(i);
+    uint16_t curr_comm = cell_comm[i];  //each command reads a sequential set of three cells from each board
+    read_register_group(curr_comm, response);
+    for (int j = 0; j < num_boards; j++) {  //j:board number
+      //Serial.print('j');
+      //Serial.println(j);
+      for (int k = 0; k < 3 && i * 3 + k < num_cells; k++) {                                                         //cell number within register group
+                                                                                                                     //Serial.print('k');
+                                                                                                                     //Serial.println(k);
+        cell_voltage[j][i * 3 + k] = (float)(((uint8_t)response[j][k * 2 + 1] << 8) | response[j][k * 2]) * 0.00015f + 1.5f;  //LSB represents 150 uV, +1.5v offset
+        pack_voltage = pack_voltage + cell_voltage[j][i * 3 + k];
+      }
+    }
+  }
+
+  /*
+  if (current < 0.2 and current > -0.2) {
+    for (int i = 0; i < num_boards; ++i) {
+      for (int j = 0; j < num_cells; ++j) {
+        open_circuit_voltage[i][j] = cell_voltage[i][j];
+      }
+    }
+  }
+  
+
+  new_voltage = true;
+
+  */
+
+  if (debug) {
+    Serial.println("Voltages:");
+    int g = 0;
+    for (int i = 0; i < num_boards; i++) {
+      Serial.print("board: ");
+      Serial.println(i + 1);
+      for (int j = 0; j < num_cells; j++) {
+        Serial.print(cell_voltage[i][j]);
+        Serial.print(" ");
+        g++;
+      }
+      Serial.println("");
+    }
+  }
+}
 
 void read_register_group(uint16_t command, uint8_t response[num_boards][6]) {  //register group is always 6 bytes
 
@@ -106,11 +128,11 @@ void read_register_group(uint16_t command, uint8_t response[num_boards][6]) {  /
 
   pec = pec15_calc(6, response[0]);  //this needs fixed to include multiple boards
 
-  // Serial.println("response pec");
-  // Serial.println(response_pec0, BIN);
-  // Serial.println(response_pec1, BIN);
-  // Serial.println("calculated pec");
-  // Serial.println(pec, BIN);
+  Serial.println("response pec");
+  Serial.println(response_pec0, HEX);
+  Serial.println(response_pec1, HEX);
+  Serial.println("calculated pec");
+  Serial.println(pec, HEX);
 
   digitalWrite(CS, HIGH);
 }
@@ -152,14 +174,6 @@ void send_command(uint16_t command) {
   SPI.transfer(pec0);
   SPI.transfer(pec1);
 
-  Serial.print("Sent command 0x");
-  Serial.println(command);
-  Serial.print("pec0: ");
-  Serial.println(pec0, HEX);
-  Serial.print("pec1 ");
-  Serial.println(pec1, HEX);
-
-
 }
 
 void poll_ADC(uint16_t command, bool curr_measure) {
@@ -182,6 +196,7 @@ void poll_ADC(uint16_t command, bool curr_measure) {
 
   digitalWrite(CS, HIGH);
 }
+
 
 void wakeup_sleep(uint8_t total_ic)  //Number of ICs in the system. This function needs some work. Enters Sleep state after 2 seconds of no command sent with valid PEC
 {
