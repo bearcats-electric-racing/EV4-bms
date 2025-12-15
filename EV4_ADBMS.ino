@@ -100,11 +100,12 @@ void measure_voltage() {  //18 millisecond execution time
 
 void read_register_group(uint16_t command, uint8_t response[num_boards][6]) {  //register group is always 6 bytes
 
-  uint16_t pec;
-  uint8_t pec0;
-  uint8_t pec1;
   uint8_t response_pec0;
   uint8_t response_pec1;
+
+  uint8_t ccmd;
+  uint16_t rx_pec10;
+  uint16_t calc_pec10;
 
   send_command(command);
 
@@ -115,24 +116,25 @@ void read_register_group(uint16_t command, uint8_t response[num_boards][6]) {  /
     }
     response_pec0 = SPI.transfer(0xFF);
     response_pec1 = SPI.transfer(0xFF);
-    pec = pec15_calc(6, response[i]);
-    pec1 = pec >> 0;
-    pec0 = pec >> 8;
 
-    if (response_pec0 != pec0 || response_pec1 != pec1) {  //this recursion needs fixed
-      Serial.println("pec error");
+    // Extract command counter and received 10-bit PEC from the ADBMS6830B readback format:
+    // PEC0 = [CCNT5..0 | PEC9..8], PEC1 = [PEC7..0]
+    ccmd = (response_pec0 >> 2) & 0x3F;
+    rx_pec10 = ((uint16_t)(response_pec0 & 0x03) << 8) | response_pec1;
+
+    calc_pec10 = pec10_calc_data_ccnt(response[i], ccmd);
+
+    if (rx_pec10 != (calc_pec10 & 0x3FF)) {
+      Serial.println("PEC Error - Data PEC Mismatch");
       wakeup_sleep(num_boards + 1);
-      //read_register_group(command, response);
     }
+
   }
 
-  pec = pec15_calc(6, response[0]);  //this needs fixed to include multiple boards
-
-  Serial.println("response pec");
-  Serial.println(response_pec0, HEX);
-  Serial.println(response_pec1, HEX);
-  Serial.println("calculated pec");
-  Serial.println(pec, HEX);
+  Serial.print("response pec ");
+  Serial.println(rx_pec10, HEX);
+  Serial.print("calculated pec ");
+  Serial.println(calc_pec10, HEX);
 
   digitalWrite(CS, HIGH);
 }
@@ -239,3 +241,39 @@ uint16_t pec15_calc(uint8_t len,   //Number of bytes that will be used to calcul
 
   return (remainder * 2);  //The CRC15 has a 0 in the LSB so the remainder must be multiplied by 2
 }
+
+// Data PEC Calculation from ChatGPT 5.2 - Analog did not provide reference code for the ADBMS6830B
+uint16_t pec10_update_bit(uint16_t rem, uint8_t in_bit)
+{
+  // CRC10 width=10, poly without x^10 term: x^7 + x^3 + x^2 + x + 1 => 0x08F
+  const uint16_t poly = 0x008F;
+  const uint16_t mask = 0x03FF;
+
+  uint8_t fb = ((rem >> 9) & 1u) ^ (in_bit & 1u);  // feedback bit
+  rem = (uint16_t)((rem << 1) & mask);
+  if (fb) rem ^= poly;
+  return rem;
+}
+
+// Computes PEC10 over 6 data bytes + 6 CCNT bits (total 54 bits), MSB-first
+uint16_t pec10_calc_data_ccnt(const uint8_t *data6, uint8_t ccnt6)
+{
+  uint16_t rem = 0x0010; // initial value = 0000010000 :contentReference[oaicite:2]{index=2}
+
+  // 48 data bits, MSB-first
+  for (uint8_t i = 0; i < 6; i++) {
+    uint8_t d = data6[i];
+    for (int8_t b = 7; b >= 0; b--) {
+      rem = pec10_update_bit(rem, (d >> b) & 1u);
+    }
+  }
+
+  // 6 CCNT bits, MSB-first: CCNT[5]..CCNT[0] live in PEC0[7:2] :contentReference[oaicite:3]{index=3}
+  for (int8_t b = 5; b >= 0; b--) {
+    rem = pec10_update_bit(rem, (ccnt6 >> b) & 1u);
+  }
+
+  return (rem & 0x03FF);
+}
+
+
