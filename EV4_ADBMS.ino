@@ -103,9 +103,9 @@ void read_register_group(uint16_t command, uint8_t response[num_boards][6]) {  /
   uint8_t response_pec0;
   uint8_t response_pec1;
 
-  uint8_t ccmd;
-  uint16_t rx_pec10;
-  uint16_t calc_pec10;
+  uint8_t ccmd; //command counter
+  uint16_t rx_pec10; //Recieved and parsed 10 bit data PEC
+  uint16_t calc_pec10; //Calculated 10 bit data PEC
 
   send_command(command);
 
@@ -114,7 +114,7 @@ void read_register_group(uint16_t command, uint8_t response[num_boards][6]) {  /
       response[i][j] = SPI.transfer(0b11111111);  // Send dummy byte to receive data
       //Serial.println(response[i][j], BIN);
     }
-    response_pec0 = SPI.transfer(0xFF);
+    response_pec0 = SPI.transfer(0xFF); //reponse PEC = command counter + PEC, needs to be parsed
     response_pec1 = SPI.transfer(0xFF);
 
     // Extract command counter and received 10-bit PEC from the ADBMS6830B readback format:
