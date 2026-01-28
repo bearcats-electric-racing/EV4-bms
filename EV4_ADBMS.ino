@@ -140,7 +140,7 @@ void measure_temp(bool open_wire_check) {
         read_register_group(curr_comm, response);
         for (int reading = 0; reading < 3 && thermistor_idx < 10; reading++) { // GPIO reading within group (~3 per group), D has 1
             for (int b = 0; b < num_boards; b++) {
-                if (command_idx == 3 && reading > 1) 
+                if (command_idx == 3 && reading > 0) 
                     continue;
 
                 uint16_t adc_code = ((uint16_t)response[b][reading * 2 + 1] << 8) | response[b][reading * 2];
