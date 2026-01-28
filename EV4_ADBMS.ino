@@ -157,7 +157,7 @@ void measure_temp(bool open_wire_check) {
     if (debug) {
         Serial.println("Temperatures:");
         for (int i = 0; i < num_boards; i++) {
-            print_with_args("\tboard: %i\n\t", i + 1);
+            print_with_args("\tboard: %d\n\t", i + 1);
             for (int j = 0; j < 10; j++) {
                 print_with_args("%f ", cell_temp[i][j]);
             }
