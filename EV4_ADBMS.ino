@@ -148,9 +148,9 @@ void measure_temp(bool open_wire_check) {
         command_idx++;
     }
 
-    for (int i = 0; i < num_boards; i++)
-        for (int j = 0; j < 10; j++)
-            map_voltage_to_temp(cell_temp[i][j]);
+    // for (int i = 0; i < num_boards; i++)
+    //     for (int j = 0; j < 10; j++)
+    //         map_voltage_to_temp(cell_temp[i][j]);
 
     // new_temp = true;
 
