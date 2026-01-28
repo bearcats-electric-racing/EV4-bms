@@ -100,7 +100,7 @@ void measure_voltage() {  //18 millisecond execution time
   }
 }
 
-float map_voltage_to_temp(float &V) { // voltage -> actual temp
+float map_voltage_to_temp(float V) { // voltage -> actual temp
     int const size = sizeof(NTC_LUT) / sizeof(NTC_LUT[0]);
     float R_bias = 10000;
     float V_ref = 3.00;
@@ -148,9 +148,9 @@ void measure_temp(bool open_wire_check) {
         command_idx++;
     }
 
-    // for (int i = 0; i < num_boards; i++)
-    //     for (int j = 0; j < 10; j++)
-    //         map_voltage_to_temp(cell_temp[i][j]);
+    for (int i = 0; i < num_boards; i++)
+        for (int j = 0; j < 10; j++)
+            cell_temp[i][j] = map_voltage_to_temp(cell_temp[i][j]);
 
     // new_temp = true;
 
