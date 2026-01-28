@@ -20,15 +20,15 @@ String format_string(const char* format, va_list args) {
     for (int i = 0; format[i] != '\0'; i++) {
         if (format[i] == '%') {
             i++;
-            if (format[i] == 'd') {
+            if (format[i] == 'd') { // INTEGER
                 result += va_arg(args, int);
-            } else if (format[i] == 'f') {
+            } else if (format[i] == 'f') { // FLOAT AND DOUBLE
                 result += va_arg(args, double);
-            } else if (format[i] == 'c') {
+            } else if (format[i] == 'c') { // CHAR
                 result += (char)va_arg(args, int);
-            } else if (format[i] == 's') {
+            } else if (format[i] == 's') { // STRING
                 result += va_arg(args, char*);
-            } else if (format[i] == 'u') {
+            } else if (format[i] == 'u') { // UNSIGNED INT
                 result += va_arg(args, unsigned int);
             } else {
                 result += '%';
