@@ -138,13 +138,13 @@ void measure_temp(bool open_wire_check) {
                                                         // three GPIO from each board (RDAUXB is an
                                                         // exception with just 2 GPIO)
         read_register_group(curr_comm, response);
-        for (int reading = 0; reading < 3 && thermistor_idx < 10; reading++) { // GPIO reading within group (~3 per group), D has 1
-            if (command_idx == 3 && reading > 0) 
+        for (int reading = 0; reading < 3 && thermistor_idx < 10; reading++) { // GPIO reading within group (~3 per group)
+            if (command_idx == 3 && reading > 0) // Group register D has 1 reading only
                 continue;
             for (int b = 0; b < num_boards; b++) {
 
                 uint16_t adc_code = ((uint16_t)response[b][reading * 2 + 1] << 8) | response[b][reading * 2];
-                cell_temp[b][thermistor_idx] = (float)adc_code * 0.00015f -8.33f; // LSB represents 150 uV + 1.5V
+                cell_temp[b][thermistor_idx] = (float)adc_code * 0.00015f - 8.33f; // LSB represents 150 uV + 1.5V
             }
             thermistor_idx++;
         }
