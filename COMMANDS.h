@@ -37,7 +37,7 @@ extern int wire_cut;        //indicates position of wire break . "0" indicates n
 #define UNMUTE   0b0000000000101001         // Unmute Discharge
 
 #define ADCV     0b0000001001100000          // Start Cell Voltage ADC Conversion and Poll Status
-#define ADAX     0b0000010010010000          // Start GPIO ADC Conversion and Poll Status
+#define ADAX     0b0000000010010000          // Start GPIO ADC Conversion and Poll Status
 #define OW       0b0000000010000000          // Open Wire Detection Bit
 
 // #define WRCFGA   0b0000000000000001      //Write Configuration Register Group A
