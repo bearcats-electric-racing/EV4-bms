@@ -4,11 +4,59 @@
 #define HEADER_H
 
 #include <stdint.h>
+#include <cstddef>
+#include <cstdarg>
+#include <WString.h>
+#include <usb_serial.h>
 
 void measure_temp(bool open_wire_check = false);
-
-
 void poll_ADC(uint16_t command, bool curr_measure = false);     //curr_measure selects whether a current measurement is taken while polling the ADC (for synchronous Current and voltage measurements to determine cell internal resistance)
+
+String format_string(const char* format, va_list args) {
+    if (format == NULL)
+        return "";
+
+    String result = "";
+    for (int i = 0; format[i] != '\0'; i++) {
+        if (format[i] == '%') {
+            i++;
+            if (format[i] == 'd') {
+                result += va_arg(args, int);
+            } else if (format[i] == 'f') {
+                result += va_arg(args, double);
+            } else if (format[i] == 'c') {
+                result += (char)va_arg(args, int);
+            } else if (format[i] == 's') {
+                result += va_arg(args, char*);
+            } else if (format[i] == 'u') {
+                result += va_arg(args, unsigned int);
+            } else {
+                result += '%';
+                if (format[i] != '\0')
+                    result += format[i];
+            }
+        } else {
+            result += format[i];
+        }
+    }
+    return result;
+}
+
+void print_with_args(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    String result = format_string(format, args);
+    va_end(args);
+    Serial.print(result);
+}
+
+void println_with_args(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    String result = format_string(format, args);
+    va_end(args);
+    Serial.println(result);
+}
 
 template <size_t rows, size_t cols> inline void min_max(float arr_2D[rows][cols], float* min, float* max) {   //finds the max and min values in any static 2D array of floats
     for (size_t i = 0; i < rows; ++i) {                                                                       //min and max must be initalized to sensible values beforehand
@@ -23,7 +71,7 @@ template <size_t rows, size_t cols> inline void min_max(float arr_2D[rows][cols]
     }
 }
 
-template <size_t length> inline int search(float arr[length], float value, bool return_lower = false) {       //searches a sorted DECRESAING list for the nearest element and returns its index. the "lower" flag if set will return the nearest element that is equal or lower
+template <size_t length> inline int search(const float arr[length], float value, bool return_lower = false) {       //searches a sorted DECRESAING list for the nearest element and returns its index. the "lower" flag if set will return the nearest element that is equal or lower
     //online function testbench:
     //https://www.programiz.com/online-compiler/5fkt3FMi4yJhY
     if (value >= arr[0]) 
