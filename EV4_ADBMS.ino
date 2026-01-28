@@ -138,7 +138,7 @@ void measure_temp(bool open_wire_check) {
                                                         // three GPIO from each board (RDAUXB is an
                                                         // exception with just 2 GPIO)
         read_register_group(curr_comm, response);
-        for (int reading = 0; reading < 3 && thermistor_idx < 10; reading++) { // GPIO reading within group (~3 per group)
+        for (int reading = 0; reading < 3 && thermistor_idx < 10; reading++) { // GPIO reading within group (~3 per group), D has 1
             for (int b = 0; b < num_boards; b++) {
                 if (command_idx == 3 && reading > 1) 
                     continue;
@@ -151,9 +151,9 @@ void measure_temp(bool open_wire_check) {
         command_idx++;
     }
 
-    for (int i = 0; i < num_boards; i++)
-        for (int j = 0; j < 10; j++)
-            cell_temp[i][j] = map_voltage_to_temp(cell_temp[i][j]);
+    // for (int i = 0; i < num_boards; i++)
+    //     for (int j = 0; j < 10; j++)
+    //         cell_temp[i][j] = map_voltage_to_temp(cell_temp[i][j]);
 
     // new_temp = true;
 
