@@ -140,9 +140,9 @@ void measure_temp(bool open_wire_check) {
         read_register_group(curr_comm, response);
         for (int reading = 0; reading < 3 && thermistor_idx < 10; reading++) { // GPIO reading within group (~3 per group)
             for (int b = 0; b < num_boards; b++) {
-                if (command_idx == 1 && reading > 1) 
+                if (command_idx == 3 && reading > 1) 
                     continue;
-                    
+
                 uint16_t adc_code = ((uint16_t)response[b][reading * 2 + 1] << 8) | response[b][reading * 2];
                 cell_temp[b][thermistor_idx] = (float)adc_code * 0.00015f -8.33f; // LSB represents 150 uV + 1.5V
             }
