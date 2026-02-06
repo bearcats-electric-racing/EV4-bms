@@ -72,7 +72,7 @@ void setup() {
             Serial.println("Setup");
             measure_current(&ctx);
             measure_voltage(&ctx);
-            measure_temp(&ctx);
+            measure_cell_temp(&ctx);
 
             can_tx(&ctx); // wrong baud rate every other message
             print_min_max(&ctx);

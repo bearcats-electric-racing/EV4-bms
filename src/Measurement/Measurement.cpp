@@ -49,7 +49,7 @@ void measure_voltage(ev4_t *ctx) {
     }
 }
 
-void measure_temp(ev4_t *ctx, bool open_wire_check) {
+void measure_cell_temp(ev4_t *ctx, bool open_wire_check) {
     uint8_t response[NUM_BOARDS][6];
     uint16_t aux_comm[4] = {RDAUXA, RDAUXB, RDAUXC, RDAUXD}; // read aux registers A through D commands
     int thermistor_idx = 0; // thermistor index 0-9
@@ -78,14 +78,14 @@ void measure_temp(ev4_t *ctx, bool open_wire_check) {
         command_idx++;
     }
 
-    // for (int i = 0; i < NUM_BOARDS; i++)
-    //     for (int j = 0; j < 10; j++)
-    //         cell_temp[i][j] = map_voltage_to_temp(cell_temp[i][j]);
+    for (int i = 0; i < NUM_BOARDS; i++)
+        for (int j = 0; j < 10; j++)
+            ctx->cell_temp[i][j] = map_voltage_to_temp(ctx->cell_temp[i][j]);
 
-    // new_temp = true;
+    ctx->new_temp = true;
 
     if (ctx->cfg.debug) {
-        Serial.println("Temperatures:");
+        Serial.println("Cell Temperatures:");
         for (int i = 0; i < NUM_BOARDS; i++) {
             print_with_args("\tBoard: %d\n\t", i + 1);
             for (int j = 0; j < 10; j++) {
@@ -94,6 +94,10 @@ void measure_temp(ev4_t *ctx, bool open_wire_check) {
             Serial.println("");
         }
     }
+}
+
+void measure_pcb_temp(ev4_t *ctx) {
+    
 }
 
 void measure_current(ev4_t *ctx) {

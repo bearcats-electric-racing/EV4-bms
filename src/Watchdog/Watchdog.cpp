@@ -27,7 +27,7 @@ void watchdog_callback_wrapper() {
 void watchdog_callback(ev4_t *ctx) {
     Serial.println("Callback called");
     measure_voltage(ctx);
-    measure_temp(ctx);
+    measure_cell_temp(ctx);
     watchdog_reset(ctx);
     ctx->watchdog_callback = true; // set watchdog callback flag
 }

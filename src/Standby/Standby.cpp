@@ -6,7 +6,7 @@ void standby_state(ev4_t *ctx) {
         CAN_message_t msg;
         measure_current(ctx);
         measure_voltage(ctx);
-        measure_temp(ctx);
+        measure_cell_temp(ctx);
         watchdog_reset(ctx);
         msg = can_rx(ctx);
 

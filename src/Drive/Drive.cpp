@@ -20,7 +20,7 @@ void drive_state(ev4_t *ctx, int t, CAN_message_t msg) {
 
         if (t % TEMP_INTERVAL == 0) {
             Serial.println("New Temp");
-            measure_temp(ctx);
+            measure_cell_temp(ctx);
             for (int i = 0; i < NUM_BOARDS; i++) {
                 for (int j = 0; j < 10; j++) {
                     ctx->temp_buffer[int(t / TEMP_INTERVAL)][i][j] = ctx->cell_temp[i][j];

@@ -41,7 +41,7 @@ CAN_message_t can_rx(ev4_t *ctx) {
 
 void can_tx(ev4_t *ctx) {
     measure_voltage(ctx);
-    measure_temp(ctx);
+    measure_cell_temp(ctx);
     float min_cell_voltage = ctx->cell_voltage[0][0];
     float max_cell_voltage = ctx->cell_voltage[0][0];
     float min_cell_temp = ctx->cell_temp[0][0];
