@@ -54,6 +54,7 @@ void charge_precharge(ev4_t *ctx) {
     while (1) {
         measure_voltage(ctx);
         measure_cell_temp(ctx);
+        measure_pcb_temp(ctx);
         watchdog_reset(ctx);
         configure_charger(ctx, true); // send charge-disable message and clear comm fault on charger
         CAN_message_t msg = can_rx(ctx);
@@ -75,6 +76,7 @@ void charge_state(ev4_t *ctx, uint32_t charge_start_time) {
 
         measure_voltage(ctx);
         measure_cell_temp(ctx);
+        measure_pcb_temp(ctx);
         measure_current(ctx);
 
         println_with_args("Current: %f", ctx->current);

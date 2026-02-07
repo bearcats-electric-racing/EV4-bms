@@ -4,10 +4,22 @@
 #include <Watchdog_t4.h>
 #include <FlexCAN_T4.h>
 #include "../System/System.h"
+#include "../Timer/Timer.h"
 
 typedef struct ev4_t {
     FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can;
     WDT_T4<WDT1> wdt; // watchdog 1 holds output pin low until power-on-reset. This is desired for a shutdown circuit
+
+    const timerinfo_t timer_list[NUM_TIMERS] = {
+        // Timer     Ch  Pin  Alt Input Select
+        {&IMXRT_TMR4, 1,   6,  1, NULL, 0},
+        {&IMXRT_TMR4, 2,   9,  1, NULL, 0},
+    };
+
+    IntervalTimer gate_timer;
+    volatile uint16_t *cntr[NUM_TIMERS]; // Cache timer cycle counters to for faster reads
+    volatile uint16_t start_count[NUM_TIMERS]; // previously measured timer cycle counts
+    volatile bool new_freq;
 
     uint8_t mode;
 
@@ -16,8 +28,9 @@ typedef struct ev4_t {
     float pack_voltage; // sum of cell voltages
     bool new_voltage;
 
-    float cell_temp[NUM_BOARDS][10]; // most recent cell temperatures. Contains raw voltage data for the duration of open wire checks
+    float cell_temp[NUM_BOARDS][NUM_THERMISTORS]; // most recent cell temperatures. Contains raw voltage data for the duration of open wire checks
     float die_temps[NUM_BOARDS]; // most recent sense board LTC6813 die temps
+    float pcb_temp[NUM_TIMERS]; // most recent pcb temperatures
     bool new_temp;
 
     float current;
@@ -30,7 +43,8 @@ typedef struct ev4_t {
     // measurement buffers
     unsigned int time_buffer[SD_INTERVAL];
     float voltage_buffer[SD_INTERVAL / VOLT_INTERVAL][NUM_BOARDS][NUM_CELLS];
-    float temp_buffer[SD_INTERVAL / TEMP_INTERVAL][NUM_BOARDS][10];
+    float cell_temp_buffer[SD_INTERVAL / CELL_TEMP_INTERVAL][NUM_BOARDS][NUM_THERMISTORS];
+    float pcb_temp_buffer[SD_INTERVAL / PCB_TEMP_INTERVAL][NUM_TIMERS];
     float current_buffer[SD_INTERVAL / CURRENT_INTERVAL];
     float currentbuffer_stat;
 
@@ -52,7 +66,7 @@ typedef struct ev4_t {
     int RMS_Current;
 
     // sense board flags
-    float GPIO_open_wire[NUM_BOARDS][10];
+    float GPIO_open_wire[NUM_BOARDS][NUM_THERMISTORS];
     bool overvoltage_flag[18];
     bool undervoltage_flag[18];
 

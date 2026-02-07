@@ -11,7 +11,7 @@ void soc_save(ev4_t *ctx) {
                 int delim_index = line.indexOf(':');
                 String name = line.substring(0, delim_index);
                 String value = line.substring(delim_index + 1);
-                map_text2var(ctx, name, value);
+                map_text_to_var(ctx, name, value);
             }
             file.close();
         }

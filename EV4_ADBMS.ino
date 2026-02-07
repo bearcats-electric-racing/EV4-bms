@@ -21,6 +21,7 @@
 #include "src/Soc/Soc.h"
 #include "src/Data/Data.h"
 #include "src/Balance/Balance.h"
+#include "src/Timer/Timer.h"
 
 
 // Holds all globals in the context of EV4
@@ -57,6 +58,8 @@ void setup() {
 
     check_memory(&ctx); // must be called to use SD card
 
+    setup_timers(&ctx);
+
     // voltage poll and temperature poll take 16 and 24 milliseconds. The rest of
     // the measure functions only take 1 or two milliseconds
 
@@ -73,6 +76,7 @@ void setup() {
             measure_current(&ctx);
             measure_voltage(&ctx);
             measure_cell_temp(&ctx);
+            measure_pcb_temp(&ctx);
 
             can_tx(&ctx); // wrong baud rate every other message
             print_min_max(&ctx);

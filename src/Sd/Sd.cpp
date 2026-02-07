@@ -21,12 +21,12 @@ void sd_data_write(ev4_t *ctx) {
                 }
             }
 
-            if (n % TEMP_INTERVAL == 0 || ctx->mode != Drive) {
+            if (n % CELL_TEMP_INTERVAL == 0 || ctx->mode != Drive) {
                 dataFile.print("\nTemperature:\n");
                 for (int i = 0; i < NUM_BOARDS; i++) {
-                    for (int j = 0; j < 10; j++) {
+                    for (int j = 0; j < NUM_THERMISTORS; j++) {
                         if (ctx->mode == Drive)
-                            dataFile.print(ctx->temp_buffer[int(n / TEMP_INTERVAL)][i][j], 2);
+                            dataFile.print(ctx->cell_temp_buffer[int(n / CELL_TEMP_INTERVAL)][i][j], 2);
                         else
                             dataFile.print(ctx->cell_temp[i][j], 2);
                         dataFile.print(", ");

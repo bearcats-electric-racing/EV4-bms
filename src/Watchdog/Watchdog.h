@@ -7,8 +7,8 @@
 #include "../Measurement/Measurement.h"
 
 void watchdog_init(ev4_t *ctx);
-void watchdog_callback(ev4_t *ctx);
-void watchdog_callback_wrapper();
+void watchdog_isr(ev4_t *ctx);
+void watchdog_callback();
 bool watchdog_reset(ev4_t *ctx);
 
 #endif

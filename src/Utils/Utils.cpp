@@ -61,12 +61,12 @@ uint8_t power_limit(const float max_cell_temp) {
     
     // else {
     //   float slope = -1.0 / (ZERO_POWER_TEMP_C - FULL_POWER_TEMP_C);
-    //   return float_2_uint8_t(FULL_POWER_LEVEL_KW * (slope * (max_cell_temp -
+    //   return float_to_uint8_t(FULL_POWER_LEVEL_KW * (slope * (max_cell_temp -
     //   FULL_POWER_TEMP_C) + 1.0), 0, 80);
     // }
 }
 
-uint8_t float_2_uint8_t(const float float_val, const float min, const float max) {
+uint8_t float_to_uint8_t(const float float_val, const float min, const float max) {
     if (max == min) return (0); // divide by zero
     if (float_val >= max) return max; // overflow
     if (float_val <= min) return min; // underflow
@@ -77,12 +77,12 @@ uint8_t float_2_uint8_t(const float float_val, const float min, const float max)
 }
 
 float map_voltage_to_temp(float V) { // voltage -> actual temp
-    int const size = sizeof(NTC_LUT) / sizeof(NTC_LUT[0]);
+    const size_t size = sizeof(NTC_LUT) / sizeof(NTC_LUT[0]);
     float R_bias = 10000;
     float V_ref = 3.00;
     
     if (V_ref == V) // divide by zero case
-    return -55;
+        return -55;
     
     float NTC_res = (V / V_ref * R_bias) / (1 - V / V_ref);
     int i = search<size>(NTC_LUT, NTC_res);
@@ -90,7 +90,14 @@ float map_voltage_to_temp(float V) { // voltage -> actual temp
     return (temperature);
 }
 
-void map_text2var(ev4_t *ctx, String name, String value) {
+float map_freq_to_temp(float Hz) {
+    const size_t size = sizeof(FREQ_LUT) / sizeof(FREQ_LUT[0]);
+    int i = search<size>(FREQ_LUT, Hz);
+    float temperature = float(i) / float(size) * (90 + 10) - 10;
+    return (temperature);
+}
+
+void map_text_to_var(ev4_t *ctx, String name, String value) {
     if (name == "SOC:") {
         ctx->soc = value.toFloat();
         Serial.println(ctx->soc);
@@ -201,7 +208,7 @@ void print_min_max(ev4_t *ctx) {
     float max_die_temp = ctx->die_temps[0];
 
     min_max<NUM_BOARDS, NUM_CELLS>(ctx->cell_voltage, min_cell_voltage, max_cell_voltage);
-    min_max<NUM_BOARDS, 10>(ctx->cell_temp, min_cell_temp, max_cell_temp);
+    min_max<NUM_BOARDS, NUM_THERMISTORS>(ctx->cell_temp, min_cell_temp, max_cell_temp);
     min_max<1, NUM_BOARDS>(&(ctx->die_temps), min_die_temp, max_die_temp); // This is how you pass a 1D array to the min_max function
 
     println_with_args("Max cell voltage: %f", max_cell_voltage);

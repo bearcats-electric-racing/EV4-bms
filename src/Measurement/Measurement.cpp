@@ -60,12 +60,12 @@ void measure_cell_temp(ev4_t *ctx, bool open_wire_check) {
     else
         adc_poll(ctx, ADAX);
 
-    while (thermistor_idx < 10) {
+    while (thermistor_idx < NUM_THERMISTORS) {
         uint16_t curr_comm = aux_comm[command_idx];     // each command reads a sequential set of
                                                         // three GPIO from each board (RDAUXB is an
                                                         // exception with just 2 GPIO)
         read_register_group(ctx, curr_comm, response);
-        for (int reading = 0; reading < 3 && thermistor_idx < 10; reading++) { // GPIO reading within group (~3 per group)
+        for (int reading = 0; reading < 3 && thermistor_idx < NUM_THERMISTORS; reading++) { // GPIO reading within group (~3 per group)
             if (command_idx == 3 && reading > 0) // Group register D has 1 reading only
                 continue;
 
@@ -79,7 +79,7 @@ void measure_cell_temp(ev4_t *ctx, bool open_wire_check) {
     }
 
     for (int i = 0; i < NUM_BOARDS; i++)
-        for (int j = 0; j < 10; j++)
+        for (int j = 0; j < NUM_THERMISTORS; j++)
             ctx->cell_temp[i][j] = map_voltage_to_temp(ctx->cell_temp[i][j]);
 
     ctx->new_temp = true;
@@ -88,7 +88,7 @@ void measure_cell_temp(ev4_t *ctx, bool open_wire_check) {
         Serial.println("Cell Temperatures:");
         for (int i = 0; i < NUM_BOARDS; i++) {
             print_with_args("\tBoard: %d\n\t", i + 1);
-            for (int j = 0; j < 10; j++) {
+            for (int j = 0; j < NUM_THERMISTORS; j++) {
                 print_with_args("%f ", ctx->cell_temp[i][j]);
             }
             Serial.println("");
@@ -96,8 +96,28 @@ void measure_cell_temp(ev4_t *ctx, bool open_wire_check) {
     }
 }
 
+void measure_frequency(ev4_t *ctx) {
+    // This technically only starts the frequency measurement, it finishes when the callback is run.
+    ctx->new_freq = false;
+    for (uint8_t i = 0; i < NUM_TIMERS; i++) 
+        ctx->start_count[i] = *(ctx->cntr[i]);
+
+    ctx->gate_timer.begin(gate_timer_callback, GATE_INTERVAL);
+
+    // This makes the measurement a blocking operation (like SPI.transfer) 
+    while (!ctx->new_freq) {}
+}
+
 void measure_pcb_temp(ev4_t *ctx) {
-    
+    measure_frequency(ctx);
+    for (uint8_t i = 0; i < NUM_TIMERS; i++) 
+        ctx->pcb_temp[i] = map_freq_to_temp(ctx->pcb_temp[i]);
+
+    if (ctx->cfg.debug) {
+        print_with_args("PCB Temperatures:\n\t");
+        for (uint8_t i = 0; i < NUM_TIMERS; i++) 
+            println_with_args("%f ", ctx->pcb_temp[i]);
+    }
 }
 
 void measure_current(ev4_t *ctx) {
