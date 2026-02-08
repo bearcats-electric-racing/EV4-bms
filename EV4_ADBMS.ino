@@ -1,10 +1,3 @@
-#include <SD.h>
-#include <SPI.h>
-
-#include <algorithm>
-#include <cmath>
-#include <string>
-
 #include "src/System/System.h"
 #include "src/Utils/Utils.h"
 
@@ -22,7 +15,6 @@
 #include "src/Data/Data.h"
 #include "src/Balance/Balance.h"
 #include "src/Timer/Timer.h"
-
 
 // Holds all globals in the context of EV4
 static ev4_t ctx{};
