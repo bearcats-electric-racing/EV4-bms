@@ -28,10 +28,11 @@ tdd:
 	cmake --build $(BUILD_DIR)
 	$(TEST_BIN)
 
-tdd-ci:
-	cmake -S . -B $(BUILD_DIR)
-	cmake --build $(BUILD_DIR)
-	ctest --test-dir $(BUILD_DIR) --output-on-failure
+# If ever there are multiple test executables
+# tdd-ctest:
+# 	cmake -S . -B $(BUILD_DIR)
+# 	cmake --build $(BUILD_DIR)
+# 	ctest --test-dir $(BUILD_DIR) --output-on-failure
 
 clean:
 	rm -rf $(BUILD_DIR)
