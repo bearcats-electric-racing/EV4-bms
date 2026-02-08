@@ -1,9 +1,21 @@
 find_package(CppUTest REQUIRED)
 
-add_executable(tests
-    AllTests.cpp
-    Example/ExampleTest.cpp
+# Manual
+# add_executable(tests
+#     AllTests.cpp
+#     ExampleTest.cpp
+# )
+
+# Automatic
+file(GLOB_RECURSE TEST_SOURCES
+    CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp
 )
+
+add_executable(tests
+    ${TEST_SOURCES}
+)
+
 
 target_include_directories(tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
