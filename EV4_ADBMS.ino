@@ -1,6 +1,5 @@
 #include "src/System/System.h"
 #include "src/Utils/Utils.h"
-
 #include "src/Can/Can.h"
 #include "src/Watchdog/Watchdog.h"
 #include "src/Adc/Adc.h"
