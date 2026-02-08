@@ -1,4 +1,4 @@
-.PHONY: run upload tdd test-single test-group tdd-ci clean
+.PHONY: run upload tdd test-single test-group clean
 
 BUILD_DIR := build
 TEST_BIN  := $(BUILD_DIR)/tests/tests
