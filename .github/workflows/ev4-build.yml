@@ -65,7 +65,7 @@ jobs:
 
       - name: Generate firmware size report
         run: |
-          ELF=.pio/build/teensy/firmware.elf
+          ELF=.pio/build/teensy41/firmware.elf
           pio pkg exec -p toolchain-gccarmnoneeabi -- \
             arm-none-eabi-size $ELF | tee firmware-size.txt
 
