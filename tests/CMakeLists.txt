@@ -1,12 +1,19 @@
-find_package(CppUTest REQUIRED)
+find_path(CPPUTEST_INCLUDE_DIR
+    NAMES CppUTest/TestHarness.h
+)
 
-# Manual
-# add_executable(tests
-#     AllTests.cpp
-#     ExampleTest.cpp
-# )
+find_library(CPPUTEST_LIBRARY
+    NAMES CppUTest
+)
 
-# Automatic
+find_library(CPPUTEST_EXT_LIBRARY
+    NAMES CppUTestExt
+)
+
+if (NOT CPPUTEST_INCLUDE_DIR OR NOT CPPUTEST_LIBRARY)
+    message(FATAL_ERROR "CppUTest not found")
+endif()
+
 file(GLOB_RECURSE TEST_SOURCES
     CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp
@@ -25,11 +32,12 @@ target_compile_options(tests PRIVATE
 
 target_include_directories(tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src
+    ${CPPUTEST_INCLUDE_DIR}
 )
 
 target_link_libraries(tests
-    CppUTest
-    CppUTestExt
+    ${CPPUTEST_LIBRARY}
+    ${CPPUTEST_EXT_LIBRARY}
 )
 
 add_test(NAME all_tests COMMAND tests)

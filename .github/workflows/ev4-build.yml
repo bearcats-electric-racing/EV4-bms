@@ -66,13 +66,13 @@ jobs:
             arm-none-eabi-size $ELF | tee firmware-size.txt
 
       - name: Upload firmware size report
-        uses: actions/upload-artifacts@v4
+        uses: actions/upload-artifact@v4
         with:
           name: firmware-size
           path: firmware-size.txt
 
       - name: Upload firmware artifacts
-        uses: actions/upload-artifacts@v4
+        uses: actions/upload-artifact@v4
         with:
           name: teensy41-firmware
           path: |
