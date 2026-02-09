@@ -32,7 +32,7 @@ jobs:
           make tdd
 
   teensy-build:
-    name: PlatformIO Build (Teensy 4.1)
+    name: PlatformIO Build
     runs-on: ubuntu-latest
 
     steps:
