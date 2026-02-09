@@ -55,6 +55,10 @@ jobs:
           restore-keys: |
             platformio-${{ runner.os }}-
 
+      - name: Install PlatformIO
+        run: |
+          pip install --upgrade platformio
+
       - name: Build firmware
         run: |
           pio run -e teensy41
