@@ -117,7 +117,7 @@ jobs:
         uses: arduino/compile-sketches@v1
         with:
           fqbn: teensy:avr:teensy41
-          sketch-path: |
+          sketch-paths: |
             EV4_ADBMS.ino
           libraries: |
             - source-url: https://github.com/tonton81/WDT_T4.git
