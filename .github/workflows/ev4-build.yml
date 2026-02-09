@@ -94,9 +94,15 @@ jobs:
       - name: Install Arduino CLI
         uses: arduino/setup-arduino-cli@v2
 
+      - name: Configure Arduino CLI
+        run: |
+          arduino-cli config init
+          arduino-cli set board_manager.additional_urls \
+            https://www.pjrc.com/teensy/package_teensy_index.json
+          arduino-cli core update-index
+
       - name: Install Teensy core
         run: |
-          arduino-cli core update-index
           arduino-cli core install teensy:avr
 
       - name: Install external libraries
