@@ -97,7 +97,7 @@ jobs:
       - name: Configure Arduino CLI
         run: |
           arduino-cli config init
-          arduino-cli set board_manager.additional_urls \
+          arduino-cli config set board_manager.additional_urls \
             https://www.pjrc.com/teensy/package_teensy_index.json
           arduino-cli core update-index
 
