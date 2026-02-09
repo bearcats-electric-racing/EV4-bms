@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -66,13 +66,13 @@ jobs:
             arm-none-eabi-size $ELF | tee firmware-size.txt
 
       - name: Upload firmware size report
-        uses: actions/upload-artifacts@v5
+        uses: actions/upload-artifacts@v4
         with:
           name: firmware-size
           path: firmware-size.txt
 
       - name: Upload firmware artifacts
-        uses: actions/upload-artifacts@v5
+        uses: actions/upload-artifacts@v4
         with:
           name: teensy41-firmware
           path: |
