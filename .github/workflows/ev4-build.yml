@@ -91,6 +91,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Cache Arduino CLI data
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/Arduino/libraries
+            .pio
+          key: arduino-${{ runner.os }}-teensy
+          restore-keys: |
+            arduino-${{ runner.os }}-
+
       - name: Install Arduino CLI
         uses: arduino/setup-arduino-cli@v2
 
@@ -100,15 +111,7 @@ jobs:
           arduino-cli config set board_manager.additional_urls \
             https://www.pjrc.com/teensy/package_teensy_index.json
           arduino-cli core update-index
-
-      - name: Install Teensy core
-        run: |
           arduino-cli core install teensy:avr
-
-      - name: Install external libraries
-        run: |
-          arduino-cli lib install \
-          --git-url https://github.com/tonton81/WDT_T4.git
 
       - name: Compile sketch
         uses: arduino/compile-sketches@v1
@@ -116,3 +119,5 @@ jobs:
           fqbn: teensy:avr:teensy41
           sketch-path: |
             EV4_ADBMS.ino
+          libraries: |
+            - source-url: https://github.com/tonton81/WDT_T4.git
