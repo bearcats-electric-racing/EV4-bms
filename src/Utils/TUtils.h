@@ -2,9 +2,12 @@
 #define TUTILS_H
 
 #include <cstddef>
+#include <float.h>
 
-// finds the max and min values in any static 2D array of floats, min and max must be initalized to sensible values beforehand
+// finds the max and min values in any static 2D array of floats
 template<size_t rows, size_t cols> inline void min_max(const float arr_2D[rows][cols], float &min, float &max) {
+    min = FLT_MAX;
+    max = FLT_MIN;
     for (size_t i = 0; i < rows; ++i) {
         for (size_t j = 0; j < cols; ++j) {
             if (arr_2D[i][j] < min)

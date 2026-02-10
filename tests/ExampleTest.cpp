@@ -4,7 +4,6 @@
 
 TEST_GROUP(ExampleTests) {
     void setup() {} // Can be used to init things pre tests in the "ExampleTests" test group
-
     void teardown() {} // Can be used to deinit things post tests in the same test group
 };
 
