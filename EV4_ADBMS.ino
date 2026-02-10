@@ -26,7 +26,7 @@ void setup() {
     delay(5000); // startup delay should be use to make it easier to recover the teensy when runtime errors occurs
 
     // Start timers
-    ctx.sense_watchdog_timer = ctx.start_time - 2000;   // initial sense_watchdog timer with expired watchdog time (T - 2000 milliseconds)
+    ctx.sense_watchdog_timer = ctx.start_time - 2000; // initial sense_watchdog timer with expired watchdog time (T - 2000 milliseconds)
 
     Serial.begin(9600);
     println_with_args("Startup/n/tStart Time: %u", ctx.start_time);
