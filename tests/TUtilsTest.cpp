@@ -1,12 +1,12 @@
 #include <CppUTest/TestHarness.h>
-#include <../src/Utils/TUtils.h>
+#include "../src/Utils/TUtils.h"
 
 TEST_GROUP(TUtilsTests) {
     void setup() {}
     void teardown() {}
 };
 
-TEST(TUtilsTests, MinMaxShouldReturnAccurateMinAndMax) {
+TEST(TUtilsTests, MinMaxShouldReturnCorrectMinAndMax) {
     const float test_data[2][5] = {
         {1.65, 42.0, 55.1, 61.13, -3.13},
         {-743.6, 3.0, 2.77, 2.778, 2.77}
@@ -63,9 +63,18 @@ TEST(TUtilsTests, SearchShouldReturnClosestIndexedValueByDefault) {
     int actual_index = search<5>(data, val);
     LONGS_EQUAL(expected_index, actual_index);
 
-    val = 61.13;
-    expected_index = 0;
+    val = 40.22;
+    expected_index = 2;
     actual_index = search<5>(data, val);
+    LONGS_EQUAL(expected_index, actual_index);
+}
+
+TEST(TUtilsTests, SearchShouldReturnExactIndexedValueMatch) {
+    const float data[5] = {61.13, 55.1, 42.0, 1.65, -3.13};
+    float val = 63.13;
+    float expected_index = 0;
+
+    int actual_index = search<5>(data, val);
     LONGS_EQUAL(expected_index, actual_index);
 }
 
@@ -78,7 +87,7 @@ TEST(TUtilsTests, SearchShouldReturnLowerIndexedValueWhenLowerFlagIsSet) {
     LONGS_EQUAL(expected_index, actual_index);
 }
 
-TEST(TUtilsTests, SearchShouldReturnValidIndexForOutOfBoundsValue) {
+TEST(TUtilsTests, SearchShouldClampOutOfBoundsValue) {
     const float data[5] = {61.13, 55.1, 42.0, 1.65, -3.13};
     float val = 73.0;
     float expected_index = 0;
@@ -90,4 +99,53 @@ TEST(TUtilsTests, SearchShouldReturnValidIndexForOutOfBoundsValue) {
     expected_index = 4;
     actual_index = search<5>(data, val);
     LONGS_EQUAL(expected_index, actual_index);
+}
+
+TEST(TUtilsTests, InterpolateShouldReturnCorrectMidpointValue) {
+    const float x_data[5] = {10, 8.99, 6, 2.5, -15};
+    const float y_data[5] = {20, 15, 14, 10.63, -0.1};
+
+    float x_val = 0;
+    float expected = 9.09714;
+    float actual = interpolate<5>(x_data, y_data, x_val);
+    float tolerance = .00001f;
+    DOUBLES_EQUAL(expected, actual, tolerance);
+}
+
+TEST(TUtilsTests, InterpolateShouldReturnCorrectMidpointValueGivenNegativeSlope) {
+    const float x_data[5] = {10, 8.99, 6, 2.5, -15};
+    const float y_data[5] = {-0.1, 10.63, 14, 15, 20};
+
+    float x_val = 4.6767;
+    float expected = 14.37808;
+    float actual = interpolate<5>(x_data, y_data, x_val);
+    float tolerance = .00001f;
+    DOUBLES_EQUAL(expected, actual, tolerance);
+}
+
+TEST(TUtilsTests, InterpolateShouldReturnExactValueMatch) {
+    const float x_data[5] = {10, 8.99, 6, 2.5, -15};
+    const float y_data[5] = {20, 15, 14, 10.63, -0.1};
+    
+    float x_val = -15;
+    float expected = -0.1;
+    float actual = interpolate<5>(x_data, y_data, x_val);
+    float tolerance = .00001f;
+    DOUBLES_EQUAL(expected, actual, tolerance);
+}
+
+TEST(TUtilsTests, InterpolateShouldClampOutOfBoundValue) {
+    const float x_data[5] = {10, 8.99, 6, 2.5, -15};
+    const float y_data[5] = {20, 15, 14, 10.63, -0.1};
+
+    float x_val = 10.1;
+    float expected = 20;
+    float actual = interpolate<5>(x_data, y_data, x_val);
+    float tolerance = .00001f;
+    DOUBLES_EQUAL(expected, actual, tolerance);
+
+    x_val = -15.1;
+    expected = -0.1;
+    actual = interpolate<5>(x_data, y_data, x_val);
+    DOUBLES_EQUAL(expected, actual, tolerance);
 }
