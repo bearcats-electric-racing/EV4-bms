@@ -66,18 +66,6 @@ bool watchdog_reset(ev4_t *ctx) { // this needs to clear the voltage and tempera
         }
     }
 
-    for (int i = 0; i < NUM_TIMERS; i++) {
-        if (ctx->pcb_temp[i] > MIN_TEMP && ctx->pcb_temp[i] < MAX_TEMP) { // TODO: Check if these min/max temps hold for pcb as well
-            ctx->pcb_temp[i] = MIN_TEMP;
-            continue;
-        } else {
-            digitalWrite(SC, LOW);
-            delay(1000); // delay to overcome debounce of shutdown circuit
-            println_with_args("Invalid pcb temp -> Pin: ", ctx->timer_list[i].pin);
-            return false;
-        }
-    }
-
     digitalWrite(SC, HIGH);
     ctx->wdt.feed();
     // Serial.println("Watchdog fed");
