@@ -3,6 +3,27 @@
 
 #include <stdint.h>
 
+// Freq [Hz]    Temp [Celcius]
+const float FREQ_LUT[] =  {
+    126165.2    ,   // 90 (~130 kHz)
+    115432.7    ,   // 85
+    105280.1    ,   // 80
+    95193.37    ,   // 75
+    84624.99    ,   // 70
+    75123.11    ,   // 65
+    65909.78    ,   // 60
+    57268.28    ,   // 55
+    49478.05    ,   // 50
+    42083.04    ,   // 45
+    35553.39    ,   // 40
+    29637.82    ,   // 35
+    24647.04    ,   // 30
+    20206.40    ,   // 25
+    16364.73    ,   // 20
+    13102.91    ,   // 15
+    10392.76    ,   // 10 (~10 kHz)
+};
+
 // Rnom [ohms]	 Temp [Celcius]
 const float NTC_LUT[] =  {
     436354.09	,	//	-55
@@ -213,7 +234,7 @@ const float NTC_LUT[] =  {
     293.56	    ,	//	150
 };
 
-const uint16_t crc15Table[256] = { // precomputed CRC15 Table for IsoSPI PEC calculations
+const uint16_t CRC15_TABLE[256] = { // precomputed CRC15 Table for IsoSPI PEC calculations
     0x0,0xc599, 0xceab, 0xb32, 0xd8cf, 0x1d56, 0x1664, 0xd3fd, 0xf407, 0x319e, 0x3aac,
     0xff35, 0x2cc8, 0xe951, 0xe263, 0x27fa, 0xad97, 0x680e, 0x633c, 0xa6a5, 0x7558, 0xb0c1,
     0xbbf3, 0x7e6a, 0x5990, 0x9c09, 0x973b, 0x52a2, 0x815f, 0x44c6, 0x4ff4, 0x8a6d, 0x5b2e,
@@ -239,8 +260,8 @@ const uint16_t crc15Table[256] = { // precomputed CRC15 Table for IsoSPI PEC cal
     0x585a, 0x8ba7, 0x4e3e, 0x450c, 0x8095
 };
 
-const float discharge_points[] = { // discharge x-axis curve in milli-Amp Hours
-    3000    	,
+const float DISCHARGE_POINTS[] = { // discharge x-axis curve in milli-Amp Hours
+    3000    	  ,
     2869.565217	,
     2739.130435	,
     2608.695652	,
@@ -266,9 +287,9 @@ const float discharge_points[] = { // discharge x-axis curve in milli-Amp Hours
     0	
 };
 
-const float discharge_currents[] = {0.6, 1.5, 3, 10, 20, 30};  // constant current @ each discharge curve
+const float DISCHARGE_CURRENTS[] = {0.6, 1.5, 3, 10, 20, 30};  // constant current @ each discharge curve
 
-const float discharge_curves[][24] = { // voltage y axis of discharge curves
+const float DISCHARGE_CURVES[][24] = { // voltage y axis of discharge curves
     {
         4.19491456    ,
         4.096043256   ,

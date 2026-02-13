@@ -1,13 +1,5 @@
-#include <SD.h>
-#include <SPI.h>
-
-#include <algorithm>
-#include <cmath>
-#include <string>
-
 #include "src/System/System.h"
 #include "src/Utils/Utils.h"
-
 #include "src/Can/Can.h"
 #include "src/Watchdog/Watchdog.h"
 #include "src/Adc/Adc.h"
@@ -21,7 +13,7 @@
 #include "src/Soc/Soc.h"
 #include "src/Data/Data.h"
 #include "src/Balance/Balance.h"
-
+#include "src/Timer/Timer.h"
 
 // Holds all globals in the context of EV4
 static ev4_t ctx{};
@@ -57,6 +49,8 @@ void setup() {
 
     check_memory(&ctx); // must be called to use SD card
 
+    setup_timers(&ctx);
+
     // voltage poll and temperature poll take 16 and 24 milliseconds. The rest of
     // the measure functions only take 1 or two milliseconds
 
@@ -72,7 +66,8 @@ void setup() {
             Serial.println("Setup");
             measure_current(&ctx);
             measure_voltage(&ctx);
-            measure_temp(&ctx);
+            measure_cell_temp(&ctx);
+            measure_pcb_temp(&ctx);
 
             can_tx(&ctx); // wrong baud rate every other message
             print_min_max(&ctx);
