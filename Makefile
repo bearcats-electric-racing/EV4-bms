@@ -4,13 +4,13 @@ BUILD_DIR := build
 TEST_BIN  := $(BUILD_DIR)/tests/tests
 
 run:
-	pio run
+	pio run -e teensy41
 
 run-test:
 	pio run -e test
 
 upload:
-	pio run -t upload
+	pio run -e teensy41 -t upload
 
 upload-test:
 	pio run -e test -t upload
