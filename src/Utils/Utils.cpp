@@ -97,6 +97,29 @@ void map_text2var(ev4_t *ctx, String name, String value) {
     }
 }
 
+float get_voltage(ev4_t *ctx, int index) {
+    uint8_t numBoard = index / NUM_CELLS;
+    uint8_t numCell = index % NUM_CELLS;
+    if(numBoard > NUM_BOARDS){
+        return 0.00;
+    }
+    else{
+        return ctx->cell_voltage[numBoard][numCell];
+    }
+    
+}
+
+float get_temperature(ev4_t *ctx, int index){
+    uint8_t numBoard = index / 10;
+    uint8_t numGPIO = index % 10;
+    if(numBoard > NUM_BOARDS){
+        return 0.00;
+    }
+    else{
+        return ctx->cell_temp[numBoard][numGPIO];
+    }
+}
+
 void send_command(ev4_t *ctx, uint16_t command) {
     uint8_t comm_arr[2];
     uint16_t pec;

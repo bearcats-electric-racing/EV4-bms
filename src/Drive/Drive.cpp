@@ -37,9 +37,14 @@ void drive_state(ev4_t *ctx, int t, CAN_message_t msg) {
             sd_data_write(ctx);
 
         if (t % CAN_INTERVAL == 0) {
-            Serial.println("Send CAN");
+            Serial.println("Send CAN Summary");
             soc_update(ctx);
             can_tx(ctx);
+        }
+
+        if (t % CAN_INTERVAL_ALL == 0) {
+            Serial.println("Send CAN All");
+            can_tx_all(ctx);
         }
 
         // msg = RX_CAN();

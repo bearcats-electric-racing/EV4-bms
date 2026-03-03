@@ -72,6 +72,7 @@ const int VOLT_INTERVAL = 5;
 const int TEMP_INTERVAL = 50;
 const int CURRENT_INTERVAL = 1;
 const int CAN_INTERVAL = 50;
+const int CAN_INTERVAL_ALL = 1000;      // Dump Full Temp / Voltage data to CAN
 const int SD_INTERVAL = 100;            // This needs to be the longest interval
 
 // SD Card

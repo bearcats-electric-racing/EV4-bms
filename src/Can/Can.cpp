@@ -71,9 +71,68 @@ void can_tx(ev4_t *ctx) {
     BMS_data.buf[7] = 0;
 
     if (ctx->can.write(BMS_data))
-        Serial.println("CAN message sent 2");
+        Serial.println("CAN message sent (Summary)");
     else
-        Serial.println("CAN message TX Failed");
+        Serial.println("CAN message TX Failed (Summary)");
 
     digitalWrite(CTX3, LOW);
 }
+
+void can_tx_all(ev4_t *ctx) {
+    measure_voltage(ctx);
+
+    digitalWrite(STBY, LOW);
+    digitalWrite(CTX3, HIGH);
+    delay(1);
+
+    CAN_message_t BMS_data_all;
+
+    BMS_data_all.id = 0x0000000A;
+    BMS_data_all.flags.extended = 0;
+    BMS_data_all.len = 8; // Set the data length
+    
+    //Find # of CAN Messages for Voltage Transmission
+    uint8_t num_txs = NUM_BOARDS * NUM_CELLS / 8;
+    if(NUM_BOARDS * NUM_CELLS % 8 != 0) {
+        num_txs++;
+    }
+    uint8_t cell_index = 0;
+
+    //Transmit Voltages
+    for(int i = 0; i < num_txs; i++) {
+        BMS_data_all.buf[0] = float_2_uint8_t(get_voltage(ctx, cell_index++), 2.00, 4.55);
+        BMS_data_all.buf[1] = float_2_uint8_t(get_voltage(ctx, cell_index++), 2.00, 4.55);
+        BMS_data_all.buf[2] = float_2_uint8_t(get_voltage(ctx, cell_index++), 2.00, 4.55);
+        BMS_data_all.buf[3] = float_2_uint8_t(get_voltage(ctx, cell_index++), 2.00, 4.55);
+        BMS_data_all.buf[4] = float_2_uint8_t(get_voltage(ctx, cell_index++), 2.00, 4.55);
+        BMS_data_all.buf[5] = float_2_uint8_t(get_voltage(ctx, cell_index++), 2.00, 4.55);
+        BMS_data_all.buf[6] = float_2_uint8_t(get_voltage(ctx, cell_index++), 2.00, 4.55);
+        BMS_data_all.buf[7] = float_2_uint8_t(get_voltage(ctx, cell_index++), 2.00, 4.55);
+        ctx->can.write(BMS_data_all);
+    }
+
+    measure_temp(ctx);
+
+    //Find # of CAN Messages for Temperature Transmission
+    num_txs = NUM_BOARDS * 10 / 8;
+    if(NUM_BOARDS * 10 % 8 != 0) {
+        num_txs++;
+    }
+    uint8_t temp_index = 0;
+
+    //Transmit Temperatures
+    for(int i = 0; i < num_txs; i++) {
+        BMS_data_all.buf[0] = float_2_uint8_t(get_temperature(ctx, temp_index++), 0.00, 75.00);
+        BMS_data_all.buf[1] = float_2_uint8_t(get_temperature(ctx, temp_index++), 0.00, 75.00);
+        BMS_data_all.buf[2] = float_2_uint8_t(get_temperature(ctx, temp_index++), 0.00, 75.00);
+        BMS_data_all.buf[3] = float_2_uint8_t(get_temperature(ctx, temp_index++), 0.00, 75.00);
+        BMS_data_all.buf[4] = float_2_uint8_t(get_temperature(ctx, temp_index++), 0.00, 75.00);
+        BMS_data_all.buf[5] = float_2_uint8_t(get_temperature(ctx, temp_index++), 0.00, 75.00);
+        BMS_data_all.buf[6] = float_2_uint8_t(get_temperature(ctx, temp_index++), 0.00, 75.00);
+        BMS_data_all.buf[7] = float_2_uint8_t(get_temperature(ctx, temp_index++), 0.00, 75.00);
+        ctx->can.write(BMS_data_all);
+    }
+
+    digitalWrite(CTX3, LOW);
+}
+
