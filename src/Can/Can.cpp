@@ -62,11 +62,11 @@ void can_tx(ev4_t *ctx) {
     BMS_data.len = 8; // Set the data length
 
     BMS_data.buf[0] = float_2_uint8_t(ctx->soc, 0, 100);                // SOC
-    BMS_data.buf[1] = float_2_uint8_t(ctx->currentbuffer_stat, 0, 200); // current
+    BMS_data.buf[1] = float_2_uint8_t(ctx->currentbuffer_stat, 0, 250); // current
     BMS_data.buf[2] = float_2_uint8_t(max_cell_voltage, 0, 5);     // max cell voltage
-    BMS_data.buf[3] = float_2_uint8_t(max_cell_temp, 0, 150);      // max cell temp
+    BMS_data.buf[3] = float_2_uint8_t(max_cell_temp, 0, 75);      // max cell temp
     BMS_data.buf[4] = float_2_uint8_t(min_cell_voltage, 0, 5);     // min cell voltage
-    BMS_data.buf[5] = float_2_uint8_t(min_cell_temp, 0, 150);      // min cell temp
+    BMS_data.buf[5] = float_2_uint8_t(min_cell_temp, 0, 75);      // min cell temp
     BMS_data.buf[6] = inst_power_limit;                            // BMS Suggested Power Limit
     BMS_data.buf[7] = 0;
 
