@@ -5,7 +5,7 @@
 
 // https://github.com/PaulStoffregen/FreqCountMany
 
-#define GATE_INTERVAL (2000) // microseconds per gate interval
+#define GATE_INTERVAL (4000) // microseconds per gate interval
 #define SCALE (1000000.0f / GATE_INTERVAL)
 
 struct ev4_t;
