@@ -1,4 +1,4 @@
-.PHONY: run upload tdd test-single test-group clean
+.PHONY: run run-test upload upload-test tdd test-single test-group clean
 
 BUILD_DIR := build
 TEST_BIN  := $(BUILD_DIR)/tests/tests
@@ -6,8 +6,14 @@ TEST_BIN  := $(BUILD_DIR)/tests/tests
 run:
 	pio run
 
+run-test:
+	pio run -e test
+
 upload:
 	pio run -t upload
+
+upload-test:
+	pio run -e test -t upload
 
 test-single:
 	@if [ -z "$(TEST)" ]; then \
