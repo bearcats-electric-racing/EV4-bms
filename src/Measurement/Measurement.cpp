@@ -96,16 +96,26 @@ void measure_cell_temp(ev4_t *ctx, bool open_wire_check) {
     }
 }
 
-void measure_frequency(ev4_t *ctx) {
-    // This technically only starts the frequency measurement, it finishes when the callback is run.
-    ctx->new_freq = false;
-    for (uint8_t i = 0; i < NUM_TIMERS; i++) 
-        ctx->start_count[i] = *(ctx->cntr[i]);
+void measure_frequency(ev4_t *ctx, bool batch, uint8_t trials) {
+    if (!batch) trials = 1;
+    float freqs[NUM_TIMERS] = {0.0, 0.0};
+    for (uint8_t t = 0; t < trials; t++) {
+        ctx->new_freq = false;
+        for (uint8_t i = 0; i < NUM_TIMERS; i++) 
+            ctx->start_count[i] = *(ctx->cntr[i]);
 
-    ctx->gate_timer.begin(gate_timer_callback, GATE_INTERVAL);
+        ctx->gate_timer.begin(gate_timer_callback, GATE_INTERVAL);
 
-    // This makes the measurement a blocking operation (like SPI.transfer) 
-    while (!ctx->new_freq) {}
+        // Blocking
+        while (!ctx->new_freq) {}
+
+        float tmp[NUM_TIMERS];
+        for (uint8_t i = 0; i < NUM_TIMERS; i++) {
+            tmp[i] = freqs[i];
+            ctx->pcb_temp[i] = std::min(ctx->pcb_temp[i], freqs[i]);
+            freqs[i] = tmp[i];
+        }
+    }
 }
 
 void measure_pcb_temp(ev4_t *ctx) {
