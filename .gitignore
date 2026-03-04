@@ -1,5 +1,6 @@
-.vscode
 src/*.csv
 build
 .DS_Store
 .pio
+config.bat
+node_modules
