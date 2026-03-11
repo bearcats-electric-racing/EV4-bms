@@ -12,11 +12,15 @@ typedef struct ev4_t {
     uint8_t mode;
 
     float cell_voltage[NUM_BOARDS][NUM_CELLS]; // most recent cell voltages
+    float min_cell_voltage;
+    float max_cell_voltage;
     float open_circuit_voltage[NUM_BOARDS][NUM_CELLS];
     float pack_voltage; // sum of cell voltages
     bool new_voltage;
 
     float cell_temp[NUM_BOARDS][10]; // most recent cell temperatures. Contains raw voltage data for the duration of open wire checks
+    float min_cell_temp;
+    float max_cell_temp;
     float die_temps[NUM_BOARDS]; // most recent sense board LTC6813 die temps
     bool new_temp;
 

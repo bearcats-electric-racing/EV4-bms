@@ -193,21 +193,15 @@ void write_register_group(ev4_t *ctx, uint16_t command, uint8_t data[NUM_BOARDS]
 }
 
 void print_min_max(ev4_t *ctx) {
-    float min_cell_voltage = ctx->cell_voltage[0][0];
-    float max_cell_voltage = ctx->cell_voltage[0][0];
-    float min_cell_temp = ctx->cell_temp[0][0];
-    float max_cell_temp = ctx->cell_temp[0][0];
     float min_die_temp = ctx->die_temps[0];
     float max_die_temp = ctx->die_temps[0];
 
-    min_max<NUM_BOARDS, NUM_CELLS>(ctx->cell_voltage, min_cell_voltage, max_cell_voltage);
-    min_max<NUM_BOARDS, 10>(ctx->cell_temp, min_cell_temp, max_cell_temp);
     min_max<1, NUM_BOARDS>(&(ctx->die_temps), min_die_temp, max_die_temp); // This is how you pass a 1D array to the min_max function
 
-    println_with_args("Max cell voltage: %f", max_cell_voltage);
-    println_with_args("Min cell voltage: %f", min_cell_voltage);
-    println_with_args("Max cell temp: %f", max_cell_temp);
-    println_with_args("Min cell temp: %f", min_cell_temp);
+    println_with_args("Max cell voltage: %f", ctx->max_cell_voltage);
+    println_with_args("Min cell voltage: %f", ctx->min_cell_voltage);
+    println_with_args("Max cell temp: %f", ctx->max_cell_temp);
+    println_with_args("Min cell temp: %f", ctx->min_cell_temp);
     println_with_args("Max die temp: %f", max_die_temp);
     println_with_args("Min die temp: %f", min_die_temp);
 }

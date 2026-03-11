@@ -5,7 +5,8 @@
 
 typedef struct config_t {
     bool debug;
-    float balance_threshold = 2.5;       // will not balance cells below this threshold (V)
+    float balance_threshold = 3.0;       // will not balance cells below this threshold (V)
+    float balance_precision = 0.01;      // Will balance cells to this tolerance
     float _qt = 12.6 * 60;               // total capacity (coulumbs): total capacity (Ah) * 60s/1hr
     float max_difference = 0.3;          // will not continue charging if max-min cell exceeds this threshold
     uint8_t adc_mode;                    // integer 0-7 to set ADC sampling frequency

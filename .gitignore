@@ -1,3 +1,4 @@
-.vscode
 src/*.csv
 build
+config.bat
+node_modules

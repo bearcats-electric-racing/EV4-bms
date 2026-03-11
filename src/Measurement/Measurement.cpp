@@ -29,11 +29,17 @@ void measure_voltage(ev4_t *ctx) {
         }
     }
 
+    // Update open circuit voltage if possible
     if (ctx->current < 0.2 and ctx->current > -0.2) {
         for (int i = 0; i < NUM_BOARDS; ++i)
             for (int j = 0; j < NUM_CELLS; ++j)
                 ctx->open_circuit_voltage[i][j] = ctx->cell_voltage[i][j];
     }
+
+    // Update min, max voltage
+    ctx->min_cell_voltage = ctx->cell_voltage[0][0];
+    ctx->max_cell_voltage = ctx->cell_voltage[0][0];
+    min_max<NUM_BOARDS, NUM_CELLS>(ctx->cell_voltage, ctx->min_cell_voltage, ctx->max_cell_voltage);
 
     ctx->new_voltage = true;
 
@@ -82,7 +88,12 @@ void measure_temp(ev4_t *ctx, bool open_wire_check) {
     //     for (int j = 0; j < 10; j++)
     //         cell_temp[i][j] = map_voltage_to_temp(cell_temp[i][j]);
 
-    ctx->new_temp = true;       //Uncommented 3/3/26 - seems like it needs to be here.
+    ctx->new_temp = true;
+
+    // Update min, max temp
+    ctx->min_cell_temp = ctx->cell_temp[0][0];
+    ctx->max_cell_temp = ctx->cell_temp[0][0];
+    min_max<NUM_BOARDS, 10>(ctx->cell_temp, ctx->min_cell_temp, ctx->max_cell_temp);
 
     if (ctx->cfg.debug) {
         Serial.println("Temperatures:");
