@@ -20,7 +20,7 @@ void configure_charger(ev4_t *ctx, bool enable, uint16_t charger_current) {
     delay(1);
 
     CAN_message_t CHGR_EN;
-    CHGR_EN.id = 0x1806E5F4; // Set the CAN message ID datasheet
+    CHGR_EN.id = 0x1806E6F4; // Set the CAN message ID datasheet
     CHGR_EN.flags.extended = 1;
     CHGR_EN.len = 8; // Set the data length
     // 7FF max CAN ID
@@ -32,7 +32,7 @@ void configure_charger(ev4_t *ctx, bool enable, uint16_t charger_current) {
     CHGR_EN.buf[1] = (uint8_t)(voltage_int);      // Low byte
     CHGR_EN.buf[2] = (uint8_t)(current_int >> 8); // High byte
     CHGR_EN.buf[3] = (uint8_t)(current_int);      // Low byte
-    CHGR_EN.buf[4] = (uint8_t)(enable);
+    CHGR_EN.buf[4] = (uint8_t)(!enable);          // Inverted logic, enable = 0 will turn the charger on
     CHGR_EN.buf[5] = 0;
     CHGR_EN.buf[6] = 0;
     CHGR_EN.buf[7] = 0;
