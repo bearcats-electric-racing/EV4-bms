@@ -204,6 +204,11 @@ void print_min_max(ev4_t *ctx) {
     println_with_args("Min cell temp: %f", ctx->min_cell_temp);
     println_with_args("Max die temp: %f", max_die_temp);
     println_with_args("Min die temp: %f", min_die_temp);
+
+    if(ctx->cfg.debug){
+        if(ctx->memory_fault)
+            Serial.println("Memory Fault");
+    }
 }
 
 bool determine_mode(ev4_t *ctx, CAN_message_t msg, bool CAN_baud_alt) {

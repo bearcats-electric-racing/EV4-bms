@@ -73,6 +73,7 @@ bool watchdog_reset(ev4_t *ctx) { // this needs to clear the voltage and tempera
 
     digitalWrite(20, HIGH);
     ctx->wdt.feed();
-    // Serial.println("Watchdog fed");
+    if(ctx->cfg.debug)
+        Serial.println("Watchdog fed");
     return true;
 }

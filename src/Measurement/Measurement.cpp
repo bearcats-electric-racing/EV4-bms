@@ -129,10 +129,14 @@ void measure_current(ev4_t *ctx) {
         ctx->current = (volt - 2.5) / .004 - ctx->current_offset; // this needs checked
     }
 
-    // if(ctx->cfg.debug){
-    //   Serial.print(ctx->current: "); 
-    //   Serial.println(ctx->current);
-    // }
+    if(ctx->cfg.debug){
+        if(ctx->curr_sense_fault)
+            Serial.println("Current Sense Fault");
+        else{
+            Serial.print("Current: "); 
+            Serial.println(ctx->current);
+        }
+    }
     
     ctx->current_count++;
     digitalWrite(CS1, HIGH);
