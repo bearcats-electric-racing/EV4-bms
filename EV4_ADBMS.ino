@@ -57,6 +57,8 @@ void setup() {
 
     check_memory(&ctx); // must be called to use SD card
 
+    balance_cells(&ctx, OFF);       // No cell balancing by default
+
     // voltage poll and temperature poll take 16 and 24 milliseconds. The rest of
     // the measure functions only take 1 or two milliseconds
 
@@ -111,7 +113,7 @@ void loop() {
 
         charge_precharge(&ctx);
 
-        balance_cells(&ctx, ON);
+        balance_cells(&ctx, OFF);       //Temporarily disabled
         
         // 00100 low ac power on charger flag
         delay(1000);    // delay so that another Charger CAN message is sent to the
@@ -155,13 +157,15 @@ void loop() {
         println_with_args("Balance Mode Entered");
         balance_cells(&ctx, ON);
         while(1)
-            dump_data_to_serial();
+            print_min_max(&ctx);
+            delay(20);
     }
 
     case Mode::Debug: 
     default: {
         digitalWrite(SC, LOW); // open shutdown circuit in debug mode
         Serial.println("Debug Mode Entered");
+        balance_cells(&ctx, OFF);
         while (1) 
             dump_data_to_serial();
     }
