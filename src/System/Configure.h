@@ -46,7 +46,7 @@ const int NUM_PARALLEL = 4;
 // CAN Bus Parameters
 const uint16_t BMS_ID = 0x123;                // standard ID of BMS TX messages
 const uint32_t INV_TX_ID = 0x0A7;             // CAN Message ID of message send from inverter of DC Bus Voltage (100 Hz frequency).
-const uint32_t CHG_TX_ID = 0x1806E5F4;        // CAN Message ID of messages sent from charger
+const uint32_t CHG_TX_ID = 0x18FF50E5;        // CAN Message ID of messages sent from charger
 
 // BMS operation mode. Leave as Init string to determine mode during runtime
 enum Mode {
