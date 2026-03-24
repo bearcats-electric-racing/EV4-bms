@@ -32,9 +32,12 @@
 #define MUTE     (0b0000000000101000)         // Mute Discharge
 #define UNMUTE   (0b0000000000101001)         // Unmute Discharge
 
-#define ADCV     (0b0000001001100000)         // Start Cell Voltage ADC Conversion and Poll Status
+#define ADCV     (0b0000001001100000)         // Start Cell Voltage ADC Conversion and Poll Status - C-ADC
+#define ADSV     (0b0000000101101000)         // Start Cell Voltage ADC Conversion and Poll Status - S-ADC
 #define ADAX     (0b0000010010010000)         // Start GPIO ADC Conversion and Poll Status
-#define OW       (0b0000000010000000)         // Open Wire Detection Bit
+#define OW_GPIO  (0b0000000110000000)         // GPIO Open Wire Detection Bit
+#define OW_ODD   (0b0000000000000010)         // Cell Open Wire Odd Bits
+#define OW_EVEN  (0b0000000000000001)         // Cell Open Wire Even Bits
 #define ITEMP    (0b0000000001000011)         // Die Temperature Bits
 
 // configuration dependent commands 

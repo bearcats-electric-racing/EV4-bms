@@ -55,16 +55,11 @@ void measure_voltage(ev4_t *ctx) {
     }
 }
 
-void measure_temp(ev4_t *ctx, bool open_wire_check) {
+void measure_temp(ev4_t *ctx) {
     uint8_t response[NUM_BOARDS][6];
     uint16_t aux_comm[4] = {RDAUXA, RDAUXB, RDAUXC, RDAUXD}; // read aux registers A through D commands
     int thermistor_idx = 0; // thermistor index 0-9
     int command_idx = 0; // command index within aux_comm array
-
-    if (open_wire_check)
-        adc_poll(ctx, ADAX | OW); // initiate and wait for GPIO measurement
-    else
-        adc_poll(ctx, ADAX);
 
     while (thermistor_idx < 10) {
         uint16_t curr_comm = aux_comm[command_idx];     // each command reads a sequential set of
@@ -154,4 +149,12 @@ void measure_die_temp(ev4_t *ctx) {
         // Serial.println(die_temps[i]);
     }
     // Serial.println();
+}
+
+void cell_open_wire_check(ev4_t *ctx) {
+
+}
+
+void temp_open_wire_check(ev4_t *ctx) {
+    
 }

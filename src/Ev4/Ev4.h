@@ -55,11 +55,6 @@ typedef struct ev4_t {
     long current_sum;
     int RMS_Current;
 
-    // sense board flags
-    float GPIO_open_wire[NUM_BOARDS][10];
-    bool overvoltage_flag[18];
-    bool undervoltage_flag[18];
-
     // Ev4 configuration (modifiable attributes)
     config_t cfg;
 } ev4_t;
