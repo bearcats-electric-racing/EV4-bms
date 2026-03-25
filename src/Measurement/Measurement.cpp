@@ -22,7 +22,7 @@ void measure_voltage(Ev4_t *ctx, bool open_wire_check) {  //18 millisecond execu
       for (int k = 0; k < 3 && i * 3 + k < num_cells; k++) {                                                         //cell number within register group
                                                                                                                      //Serial.print('k');
                                                                                                                      //Serial.println(k);
-        ctx->cell_voltage[j][i * 3 + k] = (float)(((uint8_t)response[j][k * 2 + 1] << 8) | response[j][k * 2]) * 0.00015f + 1.5f;  //LSB represents 150 uV, +1.5v offset
+        ctx->cell_voltage[j][i * 3 + k] = (float)((int16_t)(((uint16_t)response[j][k * 2 + 1] << 8) | response[j][k * 2])) * 0.00015f + 1.5f;  // LSB represents 150 uV, +1.5v offset
         ctx->pack_voltage = ctx->pack_voltage + ctx->cell_voltage[j][i * 3 + k];
       }
     }
