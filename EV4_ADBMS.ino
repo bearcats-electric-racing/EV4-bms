@@ -14,7 +14,6 @@
 #include "src/Charge/Charge.h"
 #include "src/Measurement/Measurement.h"
 #include "src/Pec/Pec.h"
-#include "src/Spi/Spi.h"
 #include "src/Sd/Sd.h"
 #include "src/Standby/Standby.h"
 #include "src/Drive/Drive.h"
@@ -29,20 +28,29 @@ static ev4_t ctx{};
 void setup() {
 
     delay(5000); // startup delay should be use to make it easier to recover the teensy when runtime errors occurs
-
+    
     // Start timers
     ctx.sense_watchdog_timer = ctx.start_time - 2000;   // initial sense_watchdog timer with expired watchdog time (T - 2000 milliseconds)
 
     Serial.begin(9600);
     println_with_args("Startup/n/tStart Time: %u", ctx.start_time);
 
-    // Initialize communications
-    spi_init(CS, SPI_MODE0); // SPI (isoSPI)
-    Serial.println("SPI0 Initialized");
-    spi_init(CS1, SPI_MODE1); // SPI1 (ADC)
+    //Initialize SPI (isoSPI)
+    pinMode(CS, OUTPUT);
+    digitalWrite(CS, HIGH);
+    SPI.begin();
+    SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+    Serial.println("SPI Initialized");
+
+    //Initialize SPI1 (ADC)
+    pinMode(CS1, OUTPUT);
+    digitalWrite(CS1, HIGH);
+    SPI1.begin();
+    SPI1.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE1));
     Serial.println("SPI1 Initialized");
-    can_init(&ctx);
-    Serial.println("CAN Initialized");
+
+    //can_init(&ctx);
+    //Serial.println("CAN Initialized");
 
     // Initialize watchdog and ADC
     watchdog_init(&ctx);
@@ -66,11 +74,11 @@ void setup() {
     // Bring up references on sense boards
     // configure_sense(&ctx);
 
-    check_memory(&ctx); // must be called to use SD card
-    Serial.println("SD Checked");
+    //check_memory(&ctx); // must be called to use SD card
+    //Serial.println("SD Checked");
 
-    balance_cells(&ctx, OFF);       // No cell balancing by default
-    Serial.println("Balance Disabled");
+    //balance_cells(&ctx, OFF);       // No cell balancing by default
+    //Serial.println("Balance Disabled");
 
     // voltage poll and temperature poll take 16 and 24 milliseconds. The rest of
     // the measure functions only take 1 or two milliseconds
@@ -80,20 +88,22 @@ void setup() {
         //measure_current(&ctx);
         //soc_update(&ctx);
 
-        CAN_message_t msg;
-        bool CAN_baud_alt = true;
+        //CAN_message_t msg;
+        //bool CAN_baud_alt = true;
 
         while (1) {
             Serial.println("Setup");
             //measure_current(&ctx);
             measure_voltage(&ctx);
-            measure_temp(&ctx);
+            cell_open_wire_check(&ctx);
+            //measure_temp(&ctx);
 
-            can_tx(&ctx); // wrong baud rate every other message
-            print_min_max(&ctx);
-            watchdog_reset(&ctx);
-            msg = can_rx(&ctx);
+            //can_tx(&ctx); // wrong baud rate every other message
+            //print_min_max(&ctx);
+            //watchdog_reset(&ctx);
+            //msg = can_rx(&ctx);
 
+            /*
             // Alternate CAN baud rate (250000 for charger, 500000 for vehicle)
             if (CAN_baud_alt) {
                 ctx.can.setBaudRate(500000);
@@ -105,8 +115,10 @@ void setup() {
 
             if (determine_mode(&ctx, msg, CAN_baud_alt)) 
                 break;
+            */
 
-            delay(20);
+            //delay(20);
+            delay(500);
         }
     }
 }
