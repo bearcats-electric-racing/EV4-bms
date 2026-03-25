@@ -22,7 +22,7 @@ void measure_voltage(ev4_t *ctx) {
             for (int k = 0; k < 3 && i * 3 + k < NUM_CELLS; k++) { // cell within cell group
                 // Serial.print('k');
                 // Serial.println(k);
-                uint16_t adc_code = ((uint8_t)response[j][k * 2 + 1] << 8) | response[j][k * 2]; // 2 bytes per reading
+                int16_t adc_code = (int16_t)(((uint16_t)response[j][k * 2 + 1] << 8) | response[j][k * 2]);
                 ctx->cell_voltage[j][i * 3 + k] = (float)adc_code * 0.00015f + 1.5f; // LSB represents 150 uV, +1.5v offset
                 ctx->pack_voltage += ctx->cell_voltage[j][i * 3 + k];
             }
