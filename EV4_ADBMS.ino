@@ -27,9 +27,6 @@
 static ev4_t ctx{};
 
 void setup() {
-    // Open shutdown circuit
-    pinMode(SC, OUTPUT);
-    digitalWrite(SC, LOW);
 
     delay(5000); // startup delay should be use to make it easier to recover the teensy when runtime errors occurs
 
@@ -41,38 +38,54 @@ void setup() {
 
     // Initialize communications
     spi_init(CS, SPI_MODE0); // SPI (isoSPI)
+    Serial.println("SPI0 Initialized");
     spi_init(CS1, SPI_MODE1); // SPI1 (ADC)
+    Serial.println("SPI1 Initialized");
     can_init(&ctx);
+    Serial.println("CAN Initialized");
 
     // Initialize watchdog and ADC
     watchdog_init(&ctx);
+    Serial.println("Watchdog Initialized");
+
+    /*
+    ADC initialization hangs without anything connected - using ADBMS6830B teensy dev board
+
     adc_init(&ctx);
+    Serial.println("ADC (Current) initialized");
+    
+
 
     // Current offset compensation
     measure_current(&ctx);
     ctx.current_offset = ctx.current;
+    Serial.println("Set Current Offset");
+
+    */
 
     // Bring up references on sense boards
     // configure_sense(&ctx);
 
     check_memory(&ctx); // must be called to use SD card
+    Serial.println("SD Checked");
 
     balance_cells(&ctx, OFF);       // No cell balancing by default
+    Serial.println("Balance Disabled");
 
     // voltage poll and temperature poll take 16 and 24 milliseconds. The rest of
     // the measure functions only take 1 or two milliseconds
 
     if (ctx.mode == Mode::Init) {
         measure_voltage(&ctx);
-        measure_current(&ctx);
-        soc_update(&ctx);
+        //measure_current(&ctx);
+        //soc_update(&ctx);
 
         CAN_message_t msg;
         bool CAN_baud_alt = true;
 
         while (1) {
             Serial.println("Setup");
-            measure_current(&ctx);
+            //measure_current(&ctx);
             measure_voltage(&ctx);
             measure_temp(&ctx);
 

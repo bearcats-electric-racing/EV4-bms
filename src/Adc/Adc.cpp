@@ -1,6 +1,7 @@
 #include "Adc.h"
 
 void adc_init(ev4_t *ctx) {
+    Serial.println("Begin ADC initialization");
     // ADC sampling time constant (without external filter) = 50 ohms * 40 pF
     // CFR.B6 = 0 : uses external voltage reference
     // CFR.B9 = 0, FSR_ADC_A = 0 to VREF_A and FSR_ADC_B = 0 to VREF_B
