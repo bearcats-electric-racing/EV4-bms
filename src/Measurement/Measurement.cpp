@@ -152,6 +152,91 @@ void measure_die_temp(ev4_t *ctx) {
 }
 
 void cell_open_wire_check(ev4_t *ctx) {
+    uint8_t response[NUM_BOARDS][6];                    // ADBMS6830B response
+    float s_voltage_open[NUM_BOARDS][NUM_CELLS];        // S voltage values, OW switch open (baseline)
+    float s_voltage_closed[NUM_BOARDS][NUM_CELLS];      // S voltage values, OW switch closed
+    bool open_wire_flags[NUM_BOARDS][NUM_CELLS] = {false};
+    bool open_wire = 0;
+
+    uint16_t cell_comm[6] = {
+        RDSVA, RDSVB, RDSVC,
+        RDSVD, RDSVE, RDSVF
+    }; // read S voltage registers A through F commands
+
+    /*
+    Open Wire Check Sequence:
+        1.) poll ADC for baseline s voltage, read register groups
+        2.) poll ADC with even open-wire check, read register groups
+        3.) poll ADC with odd open-wire check, read register groups
+        After Loop: Check for out of tolerance differences between open / closed wire
+    */
+
+    for (uint8_t i = 0; i < 3; i++){
+        if(i == 0){
+            adc_poll(ctx, ADSV);                // S-ADC poll, OW switches open
+        }
+        else if(i == 1){
+            adc_poll(ctx, ADSV | OW_EVEN);      // S-ADC poll, even OW switches closed
+        }
+        else if(i == 2){
+            adc_poll(ctx, ADSV | OW_ODD);       // S-ADC poll, odd OW switches closed
+        }
+
+        for (int j = 0; j * 3 < NUM_CELLS; j++) { // i: cell group (3 cells per register group)
+            // Serial.print('j');
+            // Serial.println(j);
+            uint16_t curr_comm = cell_comm[j]; // each command reads a sequential set
+                                            // of three cells from each board
+            read_register_group(ctx, curr_comm, response);
+            for (int k = 0; k < NUM_BOARDS; k++) { // j: board number
+                // Serial.print('k');
+                // Serial.println(k);
+                for (int l = 0; l < 3 && j * 3 + l < NUM_CELLS; l++) { // cell within cell group
+                    // Serial.print('l');
+                    // Serial.println(l);
+                    int16_t adc_code = (int16_t)(((uint16_t)response[k][l * 2 + 1] << 8) | response[k][l * 2]);
+                    
+                    // Initial loop, write all baseline voltages to s_voltage_open
+                    if(i == 0){
+                        s_voltage_open[k][j * 3 + l] = (float)adc_code * 0.00015f + 1.5f; // LSB represents 150 uV, +1.5v offset
+                    }
+                    // Loop 1, write even cells only (note: index 0 = cell 1)
+                    else if(i == 1){
+                        if((j * 3 + l) % 2){
+                            s_voltage_closed[k][j * 3 + l] = (float)adc_code * 0.00015f + 1.5f;
+                        }
+                    }
+                    // Loop 2, write odd cells only
+                    else if(i == 2){
+                        if( !((j * 3 + l) % 2)) {
+                            s_voltage_closed[k][j * 3 + l] = (float)adc_code * 0.00015f + 1.5f;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check for out of tolerance voltage drops
+    for (int i = 0; i < NUM_BOARDS; i++){
+        for (int j = 0; j < NUM_CELLS; j++){
+            if(s_voltage_closed[i][j] < (s_voltage_open[i][j] * (1.00f - open_wire_threshold)) ){
+                open_wire_flags[i][j] = 1;
+                open_wire = 1;
+                if(ctx->cfg.debug){
+                    Serial.println("Open Voltage Sense Lead!");
+                    print_with_args("Board: %d Cell: %d", i + 1, j + 1);
+                }
+            }
+        }
+    }
+
+    if(open_wire){
+        digitalWrite(SC, LOW);
+        delay(1000); // delay to overcome debounce of shutdown circuit
+        Serial.println("Open voltage sense lead detected");
+    }
+
 
 }
 

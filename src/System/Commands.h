@@ -13,6 +13,12 @@
 #define RDCVD    (0b0000000000001010)         // Read Cell Voltage Register Group D
 #define RDCVE    (0b0000000000001001)         // Read Cell Voltage Register Group E
 #define RDCVF    (0b0000000000001011)         // Read Cell Voltage Register Group F
+#define RDSVA    (0b0000000000000011)         // Read S Voltage Register Group A
+#define RDSVB    (0b0000000000000101)         // Read S Voltage Register Group B
+#define RDSVC    (0b0000000000000111)         // Read S Voltage Register Group C
+#define RDSVD    (0b0000000000001101)         // Read S Voltage Register Group D
+#define RDSVE    (0b0000000000001110)         // Read S Voltage Register Group E
+#define RDSVF    (0b0000000000001111)         // Read S Voltage Register Group F
 #define RDAUXA   (0b0000000000011001)         // Read Auxiliary Register Group A
 #define RDAUXB   (0b0000000000011010)         // Read Auxiliary Register Group B
 #define RDAUXC   (0b0000000000011011)         // Read Auxiliary Register Group C
