@@ -61,6 +61,8 @@ void measure_temp(ev4_t *ctx) {
     int thermistor_idx = 0; // thermistor index 0-9
     int command_idx = 0; // command index within aux_comm array
 
+    adc_poll(ctx, ADAX);
+
     while (thermistor_idx < 10) {
         uint16_t curr_comm = aux_comm[command_idx];     // each command reads a sequential set of
                                                         // three GPIO from each board (RDAUXB is an
@@ -71,17 +73,17 @@ void measure_temp(ev4_t *ctx) {
                 continue;
 
             for (int b = 0; b < NUM_BOARDS; b++) {
-                uint16_t adc_code = ((uint16_t)response[b][reading * 2 + 1] << 8) | response[b][reading * 2];
-                ctx->cell_temp[b][thermistor_idx] = (float)adc_code * 0.00015f - 8.33f; // LSB represents 150 uV + 1.5V
+                int16_t adc_code = (int16_t)(((uint16_t)response[b][reading * 2 + 1] << 8) | response[b][reading * 2]);
+                ctx->cell_temp[b][thermistor_idx] = (float)adc_code * 0.00015f + 1.5f; // LSB represents 150 uV, +1.5v offset
             }
             thermistor_idx++;
         }
         command_idx++;
     }
 
-    // for (int i = 0; i < NUM_BOARDS; i++)
-    //     for (int j = 0; j < 10; j++)
-    //         cell_temp[i][j] = map_voltage_to_temp(cell_temp[i][j]);
+    //for (int i = 0; i < NUM_BOARDS; i++)
+    //    for (int j = 0; j < 10; j++)
+    //        ctx->cell_temp[i][j] = map_voltage_to_temp(ctx->cell_temp[i][j]);
 
     ctx->new_temp = true;
 
