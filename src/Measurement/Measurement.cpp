@@ -81,9 +81,9 @@ void measure_temp(ev4_t *ctx) {
         command_idx++;
     }
 
-    //for (int i = 0; i < NUM_BOARDS; i++)
-    //    for (int j = 0; j < 10; j++)
-    //        ctx->cell_temp[i][j] = map_voltage_to_temp(ctx->cell_temp[i][j]);
+    for (int i = 0; i < NUM_BOARDS; i++)
+        for (int j = 0; j < 10; j++)
+            ctx->cell_temp[i][j] = map_voltage_to_temp(ctx->cell_temp[i][j]);
 
     ctx->new_temp = true;
 
