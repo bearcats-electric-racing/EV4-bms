@@ -15,10 +15,11 @@ typedef struct config_t {
 // Safe operating conditions
 const float MAX_TEMP = 58;              // 2C max measurement error (due to thermistor + ADBMS6830B)
 const float MIN_TEMP = 0;
+const float GPIO_OV = 2.8125;           // Max expected GPIO voltage. Exceeding this value assumes broken thermistor, triggers shutdown
 const float OV = 4.19;                  // over-voltage limit (spelled with an "oh" not zero) (V)
 const float UV = 2.5;                   // under-voltage limit (V)
 const float MAX_DIFF = 1.7;             // max difference between min and max cell for open parallel cell detection
-const int WATCHDOG_TIMEOUT = 10;        // watchdog timeout (in seconds). setting to 0 will DISABLE timer. Watchdog timer must be grester thatn 6 secibds
+const int WATCHDOG_TIMEOUT = 10;        // watchdog timeout (in seconds). setting to 0 will DISABLE timer. Watchdog timer must be greater than 6 seconds
 
 // Architecture
 const int NUM_BOARDS = 10;

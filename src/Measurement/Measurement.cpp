@@ -60,6 +60,7 @@ void measure_temp(ev4_t *ctx, bool open_wire_check) {
     uint16_t aux_comm[4] = {RDAUXA, RDAUXB, RDAUXC, RDAUXD}; // read aux registers A through D commands
     int thermistor_idx = 0; // thermistor index 0-9
     int command_idx = 0; // command index within aux_comm array
+    ctx->max_gpio_voltage = 0; // Used to check for open thermistor
 
     if (open_wire_check)
         adc_poll(ctx, ADAX | OW); // initiate and wait for GPIO measurement
@@ -78,6 +79,9 @@ void measure_temp(ev4_t *ctx, bool open_wire_check) {
             for (int b = 0; b < NUM_BOARDS; b++) {
                 uint16_t adc_code = ((uint16_t)response[b][reading * 2 + 1] << 8) | response[b][reading * 2];
                 ctx->cell_temp[b][thermistor_idx] = (float)adc_code * 0.00015f - 8.33f; // LSB represents 150 uV + 1.5V
+                if(ctx->cell_temp[b][thermistor_idx] > ctx->max_gpio_voltage){
+                    ctx->max_gpio_voltage = ctx->cell_temp[b][thermistor_idx];
+                }
             }
             thermistor_idx++;
         }
@@ -104,6 +108,8 @@ void measure_temp(ev4_t *ctx, bool open_wire_check) {
             }
             Serial.println("");
         }
+        Serial.print("Max GPIO Voltage: ");
+        Serial.println(ctx->max_gpio_voltage);
     }
 }
 

@@ -36,7 +36,7 @@ void setup() {
     ctx.sense_watchdog_timer = ctx.start_time - 2000;   // initial sense_watchdog timer with expired watchdog time (T - 2000 milliseconds)
 
     Serial.begin(9600);
-    println_with_args("Startup/n/tStart Time: %u", ctx.start_time);
+    println_with_args("Startup\n\tStart Time: %u", ctx.start_time);
 
     //Initialize SPI (isoSPI)
     pinMode(CS, OUTPUT);
