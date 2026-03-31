@@ -5,7 +5,8 @@
 
 typedef struct config_t {
     bool debug;
-    float balance_threshold = 2.5;       // will not balance cells below this threshold (V)
+    float balance_threshold = 3.0;       // will not balance cells below this threshold (V)
+    float balance_precision = 0.01;      // will balance cells to this tolerance
     float _qt = 12.6 * 60;               // total capacity (coulumbs): total capacity (Ah) * 60s/1hr
     float max_difference = 0.3;          // will not continue charging if max-min cell exceeds this threshold
     uint8_t adc_mode;                    // integer 0-7 to set ADC sampling frequency
@@ -14,10 +15,11 @@ typedef struct config_t {
 // Safe operating conditions
 const float MAX_TEMP = 58;                  // 2C max measurement error (due to thermistor + ADBMS6830B)
 const float MIN_TEMP = 0;
+const float GPIO_OV = 2.8125;               // Max expected GPIO voltage. Exceeding this value assumes broken thermistor, triggers shutdown
 const float OV = 4.19;                      // over-voltage limit (spelled with an "oh" not zero) (V)
 const float UV = 2.5;                       // under-voltage limit (V)
 const float MAX_DIFF = 1.7;                 // max difference between min and max cell for open parallel cell detection
-const uint8_t WATCHDOG_TIMEOUT = 10;       // watchdog timeout (in seconds). setting to 0 will DISABLE timer. Watchdog timer must be grester thatn 6 secibds
+const uint8_t WATCHDOG_TIMEOUT = 10;        // watchdog timeout (in seconds). setting to 0 will DISABLE timer. Watchdog timer must be grester thatn 6 secibds
 
 // Architecture
 const uint8_t NUM_BOARDS = 10;

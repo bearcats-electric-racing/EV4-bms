@@ -33,17 +33,13 @@ void balance_cells(ev4_t *ctx, bool set) {
         return;
     }
 
-    float min = ctx->cell_voltage[0][0];
-    float max = ctx->cell_voltage[0][0];
-
     measure_die_temp(ctx);
-    min_max<NUM_BOARDS, NUM_CELLS>(ctx->cell_voltage, min, max); // Mark cells to be discharged
-    println_with_args("Min cell voltage: %f", min);
-    println_with_args("Max cell voltage: %f", max);
+    println_with_args("Min cell voltage: %f", ctx->min_cell_voltage);
+    println_with_args("Max cell voltage: %f", ctx->max_cell_voltage);
 
     for (int i = 0; i < NUM_BOARDS; i++) {
         for (int j = 0; j < NUM_CELLS; j++) {
-            discharge[i][j] = ctx->cell_voltage[i][j] > min &&
+            discharge[i][j] = ctx->cell_voltage[i][j] > (ctx->min_cell_voltage + ctx->cfg.balance_precision) &&
                                 ctx->cell_voltage[i][j] > ctx->cfg.balance_threshold &&
                                 ctx->die_temps[i] < 58.0f;
             if (discharge[i][j]) {
@@ -54,7 +50,4 @@ void balance_cells(ev4_t *ctx, bool set) {
     }
 
     discharge_cells(ctx, discharge);
-
-    if (ctx->cfg.balance_threshold < min)
-        ctx->cfg.balance_threshold = min;
 }

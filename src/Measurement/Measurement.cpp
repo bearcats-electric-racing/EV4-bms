@@ -22,16 +22,17 @@ void measure_voltage(ev4_t *ctx) {
             for (int k = 0; k < 3 && i * 3 + k < NUM_CELLS; k++) { // cell within cell group
                 // Serial.print('k');
                 // Serial.println(k);
-                uint16_t adc_code = ((uint8_t)response[j][k * 2 + 1] << 8) | response[j][k * 2]; // 2 bytes per reading
+                int16_t adc_code = (int16_t)(((int16_t)response[j][k * 2 + 1] << 8) | response[j][k * 2]); // 2 bytes per reading
                 ctx->cell_voltage[j][i * 3 + k] = (float)adc_code * 0.00015f + 1.5f; // LSB represents 150 uV, +1.5v offset
                 ctx->pack_voltage += ctx->cell_voltage[j][i * 3 + k];
             }
         }
     }
 
+    // Update open wire circuit if possible
     if (ctx->current < 0.2 and ctx->current > -0.2) {
-        for (int i = 0; i < NUM_BOARDS; ++i)
-            for (int j = 0; j < NUM_CELLS; ++j)
+        for (int i = 0; i < NUM_BOARDS; i++)
+            for (int j = 0; j < NUM_CELLS; j++)
                 ctx->open_circuit_voltage[i][j] = ctx->cell_voltage[i][j];
     }
 
@@ -54,6 +55,7 @@ void measure_cell_temp(ev4_t *ctx, bool open_wire_check) {
     uint16_t aux_comm[4] = {RDAUXA, RDAUXB, RDAUXC, RDAUXD}; // read aux registers A through D commands
     int thermistor_idx = 0; // thermistor index 0-9
     int command_idx = 0; // command index within aux_comm array
+    ctx->max_gpio_voltage = 0;
 
     if (open_wire_check)
         adc_poll(ctx, ADAX | OW); // initiate and wait for GPIO measurement
@@ -72,17 +74,24 @@ void measure_cell_temp(ev4_t *ctx, bool open_wire_check) {
             for (int b = 0; b < NUM_BOARDS; b++) {
                 uint16_t adc_code = ((uint16_t)response[b][reading * 2 + 1] << 8) | response[b][reading * 2];
                 ctx->cell_temp[b][thermistor_idx] = (float)adc_code * 0.00015f - 8.33f; // LSB represents 150 uV + 1.5V
+                if (ctx->cell_temp[b][thermistor_idx] > ctx->max_gpio_voltage)
+                    ctx->max_gpio_voltage = ctx->cell_temp[b][thermistor_idx];
             }
             thermistor_idx++;
         }
         command_idx++;
     }
 
-    for (int i = 0; i < NUM_BOARDS; i++)
-        for (int j = 0; j < NUM_THERMISTORS; j++)
-            ctx->cell_temp[i][j] = map_voltage_to_temp(ctx->cell_temp[i][j]);
+    // for (int i = 0; i < NUM_BOARDS; i++)
+    //     for (int j = 0; j < NUM_THERMISTORS; j++)
+    //         ctx->cell_temp[i][j] = map_voltage_to_temp(ctx->cell_temp[i][j]);
 
     ctx->new_temp = true;
+
+    // Update min, max temp
+    ctx->min_cell_temp = ctx->cell_temp[0][0];
+    ctx->max_cell_temp = ctx->cell_temp[0][0];
+    min_max<NUM_BOARDS, NUM_THERMISTORS>(ctx->cell_temp, ctx->min_cell_temp, ctx->max_cell_temp);
 
     if (ctx->cfg.debug) {
         Serial.println("Cell Temperatures:");
@@ -142,10 +151,14 @@ void measure_current(ev4_t *ctx) {
         ctx->current = (volt - 2.5) / .004 - ctx->current_offset; // this needs checked
     }
 
-    // if(ctx->cfg.debug){
-    //   Serial.print(ctx->current: "); 
-    //   Serial.println(ctx->current);
-    // }
+    if (ctx->cfg.debug) {
+        if(ctx->curr_sense_fault)
+            Serial.println("Current Sense Fault");
+        else{
+            Serial.print("Current: "); 
+            Serial.println(ctx->current);
+        }
+    }
     
     ctx->current_count++;
     digitalWrite(CS1, HIGH);
