@@ -42,12 +42,14 @@ void setup() {
     SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
     Serial.println("SPI Initialized");
 
+    /*
     //Initialize SPI1 (ADC)
     pinMode(CS1, OUTPUT);
     digitalWrite(CS1, HIGH);
     SPI1.begin();
     SPI1.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE1));
     Serial.println("SPI1 Initialized");
+    */
 
     can_init(&ctx);
     Serial.println("CAN Initialized");
@@ -56,6 +58,7 @@ void setup() {
     watchdog_init(&ctx);
     Serial.println("Watchdog Initialized");
 
+    /*
     adc_init(&ctx);
     Serial.println("ADC (Current) initialized");
     
@@ -65,7 +68,7 @@ void setup() {
     measure_current(&ctx);
     ctx.current_offset = ctx.current;
     Serial.println("Set Current Offset");
-
+    */
 
     // Bring up references on sense boards
     // configure_sense(&ctx);
@@ -81,7 +84,7 @@ void setup() {
 
     if (ctx.mode == Mode::Init) {
         measure_voltage(&ctx);
-        measure_current(&ctx);
+        //measure_current(&ctx);
         //soc_update(&ctx);
 
         CAN_message_t msg;
@@ -89,17 +92,17 @@ void setup() {
 
         while (1) {
             Serial.println("Setup");
-            measure_current(&ctx);
+            //measure_current(&ctx);
             measure_voltage(&ctx);
-            cell_open_wire_check(&ctx);
-            measure_temp(&ctx);
+            //cell_open_wire_check(&ctx);
+            //measure_temp(&ctx);
 
-            can_tx(&ctx); // wrong baud rate every other message
+            //can_tx(&ctx); // wrong baud rate every other message
             //print_min_max(&ctx);
             //watchdog_reset(&ctx);
-            msg = can_rx(&ctx);
+            //msg = can_rx(&ctx);
 
-            
+            /*
             // Alternate CAN baud rate (250000 for charger, 500000 for vehicle)
             if (CAN_baud_alt) {
                 ctx.can.setBaudRate(500000);
@@ -111,6 +114,7 @@ void setup() {
 
             if (determine_mode(&ctx, msg, CAN_baud_alt)) 
                 break;
+            */
             
 
             //delay(20);
