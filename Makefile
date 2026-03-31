@@ -4,7 +4,7 @@ BUILD_DIR := build
 TEST_BIN  := $(BUILD_DIR)/tests/tests
 
 run:
-	pio run
+	pio run -e teensy41
 
 run-test:
 	pio run -e test
