@@ -97,9 +97,14 @@ void adc_poll(ev4_t *ctx, uint16_t command) {
     //     measure_current();
 
     int num_polls = 0;
-    while (return_data == 0) { // This needs a timeout condition
+    uint32_t adc_poll_start_time = millis();
+    while (return_data == 0) {
         return_data = SPI.transfer(FULL_REG); // Send dummy byte to receive data
         num_polls++;
+        if(millis() - adc_poll_start_time > 1000){          // 1000ms is a made up number and should be reviewed
+            Serial.println("ADC TImeout Error");
+            break;
+        }
     }
     // Serial.println("ADC Conversion Done!");
     // Serial.println(num_polls);

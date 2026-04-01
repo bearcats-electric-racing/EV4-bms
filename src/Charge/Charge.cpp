@@ -20,7 +20,7 @@ void configure_charger(ev4_t *ctx, bool enable, uint16_t charger_current) {
     delay(1);
 
     CAN_message_t CHGR_EN;
-    CHGR_EN.id = 0x1806E5F4; // Set the CAN message ID datasheet
+    CHGR_EN.id = 0x1806E6F4; // Set the CAN message ID datasheet
     CHGR_EN.flags.extended = 1;
     CHGR_EN.len = 8; // Set the data length
     // 7FF max CAN ID

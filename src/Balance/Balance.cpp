@@ -3,7 +3,7 @@
 void discharge_cells(ev4_t *ctx, bool discharge[NUM_BOARDS][18]) {
     uint8_t data[6];
     uint8_t data_arr[NUM_BOARDS][6];
-    uint16_t VUV = (UV - 1.5f) / (16 * 0.00015f); // Cell undervoltage threshold = VUV * 16 * 150μV + 1.5V
+    uint16_t VUV = ((UV + 0.5f) - 1.5f) / (16 * 0.00015f); // Cell undervoltage threshold = VUV * 16 * 150μV + 1.5V. 0.5v added for 3V balancing minimum
     uint16_t VOV = (OV - 1.5f) / (16 * 0.00015f); // Cell overvoltage threshold = VOV * 16 * 150μV + 1.5V
 
     // Configuration register group B
