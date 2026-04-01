@@ -36,6 +36,11 @@ void measure_voltage(ev4_t *ctx) {
                 ctx->open_circuit_voltage[i][j] = ctx->cell_voltage[i][j];
     }
 
+    // Update min, max voltage
+    ctx->min_cell_voltage = ctx->cell_voltage[0][0];
+    ctx->max_cell_voltage = ctx->cell_voltage[0][0];
+    min_max<NUM_BOARDS, NUM_CELLS>(ctx->cell_voltage, ctx->min_cell_voltage, ctx->max_cell_voltage);
+
     ctx->new_voltage = true;
 
     if (ctx->cfg.debug) {
@@ -102,6 +107,8 @@ void measure_cell_temp(ev4_t *ctx, bool open_wire_check) {
             }
             Serial.println("");
         }
+        Serial.print("Max GPIO Voltage: ");
+        Serial.println(ctx->max_gpio_voltage);
     }
 }
 

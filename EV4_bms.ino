@@ -29,7 +29,7 @@ void setup() {
     ctx.sense_watchdog_timer = ctx.start_time - 2000; // initial sense_watchdog timer with expired watchdog time (T - 2000 milliseconds)
 
     Serial.begin(9600);
-    println_with_args("Startup/n/tStart Time: %u", ctx.start_time);
+    println_with_args("Startup\n\tStart Time: %u", ctx.start_time);
 
     // Initialize communications
     spi_init(CS, SPI_MODE0); // SPI (isoSPI)
@@ -48,7 +48,7 @@ void setup() {
     // configure_sense(&ctx);
 
     check_memory(&ctx); // must be called to use SD card
-
+    balance_cells(&ctx, OFF);
     setup_timers(&ctx);
 
     // voltage poll and temperature poll take 16 and 24 milliseconds. The rest of
@@ -106,7 +106,7 @@ void loop() {
 
         charge_precharge(&ctx);
 
-        balance_cells(&ctx, ON);
+        balance_cells(&ctx, OFF);       //Temporarily disabled
         
         // 00100 low ac power on charger flag
         delay(1000);    // delay so that another Charger CAN message is sent to the
@@ -157,6 +157,7 @@ void loop() {
     default: {
         digitalWrite(SC, LOW); // open shutdown circuit in debug mode
         Serial.println("Debug Mode Entered");
+        balance_cells(&ctx, OFF);
         while (1) 
             dump_data_to_serial();
     }

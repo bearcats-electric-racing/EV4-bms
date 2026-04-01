@@ -52,6 +52,20 @@ bool watchdog_reset(ev4_t *ctx) { // this needs to clear the voltage and tempera
         return false;
     }
 
+    if (ctx->max_cell_voltage - ctx->min_cell_voltage > MAX_DIFF){
+        digitalWrite(SC, LOW);
+        delay(1000); // delay to overcome debounce of shutdown circuit
+        Serial.println("Open fusible link detected - max voltage differential exceeded");
+        return false;
+    }
+
+    if (ctx->max_gpio_voltage > GPIO_OV){
+        digitalWrite(SC, LOW);
+        delay(1000); // delay to overcome debounce of shutdown circuit
+        Serial.println("Open thermistor detected - max GPIO voltage exceeded");
+        return false;
+    }
+
     for (int i = 0; i < NUM_BOARDS; i++) {
         for (int j = 0; j < NUM_CELLS; j++) {
             if (ctx->cell_voltage[i][j] < OV && ctx->cell_voltage[i][j] > UV) {
