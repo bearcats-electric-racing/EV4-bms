@@ -117,6 +117,6 @@ jobs:
         with:
           fqbn: teensy:avr:teensy41
           sketch-paths: |
-            EV4_ADBMS.ino
+            EV4_bms.ino
           libraries: |
             - source-url: https://github.com/tonton81/WDT_T4.git
