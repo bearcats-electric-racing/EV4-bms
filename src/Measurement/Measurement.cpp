@@ -22,14 +22,14 @@ void measure_voltage(ev4_t *ctx) {
             for (int k = 0; k < 3 && i * 3 + k < NUM_CELLS; k++) { // cell within cell group
                 // Serial.print('k');
                 // Serial.println(k);
-                int16_t adc_code = (int16_t)(((int16_t)response[j][k * 2 + 1] << 8) | response[j][k * 2]); // 2 bytes per reading
+                int16_t adc_code = (int16_t)(((uint16_t)response[j][k * 2 + 1] << 8) | response[j][k * 2]); // 2 bytes per reading
                 ctx->cell_voltage[j][i * 3 + k] = (float)adc_code * 0.00015f + 1.5f; // LSB represents 150 uV, +1.5v offset
                 ctx->pack_voltage += ctx->cell_voltage[j][i * 3 + k];
             }
         }
     }
 
-    // Update open wire circuit if possible
+    // Update open circuit voltage if possible
     if (ctx->current < 0.2 and ctx->current > -0.2) {
         for (int i = 0; i < NUM_BOARDS; i++)
             for (int j = 0; j < NUM_CELLS; j++)
@@ -60,7 +60,7 @@ void measure_cell_temp(ev4_t *ctx, bool open_wire_check) {
     uint16_t aux_comm[4] = {RDAUXA, RDAUXB, RDAUXC, RDAUXD}; // read aux registers A through D commands
     int thermistor_idx = 0; // thermistor index 0-9
     int command_idx = 0; // command index within aux_comm array
-    ctx->max_gpio_voltage = 0;
+    ctx->max_gpio_voltage = 0; // Used to check for open thermistor
 
     if (open_wire_check)
         adc_poll(ctx, ADAX | OW); // initiate and wait for GPIO measurement
