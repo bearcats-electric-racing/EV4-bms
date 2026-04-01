@@ -19,7 +19,7 @@ const float GPIO_OV = 2.8125;               // Max expected GPIO voltage. Exceed
 const float OV = 4.19;                      // over-voltage limit (spelled with an "oh" not zero) (V)
 const float UV = 2.5;                       // under-voltage limit (V)
 const float MAX_DIFF = 1.7;                 // max difference between min and max cell for open parallel cell detection
-const uint8_t WATCHDOG_TIMEOUT = 10;        // watchdog timeout (in seconds). setting to 0 will DISABLE timer. Watchdog timer must be grester thatn 6 secibds
+const uint8_t WATCHDOG_TIMEOUT = 10;        // watchdog timeout (in seconds). setting to 0 will DISABLE timer. Watchdog timer must be grester thatn 6 seconds
 
 // Architecture
 const uint8_t NUM_BOARDS = 10;
