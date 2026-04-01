@@ -6,6 +6,7 @@
 #include "src/Charge/Charge.h"
 #include "src/Measurement/Measurement.h"
 #include "src/Pec/Pec.h"
+#include "src/Spi/Spi.h"
 #include "src/Sd/Sd.h"
 #include "src/Standby/Standby.h"
 #include "src/Drive/Drive.h"
@@ -30,19 +31,9 @@ void setup() {
     Serial.begin(9600);
     println_with_args("Startup\n\tStart Time: %u", ctx.start_time);
 
-    //Initialize SPI (isoSPI)
-    pinMode(CS, OUTPUT);
-    digitalWrite(CS, HIGH);
-    SPI.begin();
-    SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
-
-    //Initialize SPI1 (ADC)
-    pinMode(CS1, OUTPUT);
-    digitalWrite(CS1, HIGH);
-    SPI1.begin();
-    SPI1.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE1));
-
-    //Initialize CAN
+    // Initialize communications
+    spi_init(CS, SPI_MODE0); // SPI (isoSPI)
+    spi_init(CS1, SPI_MODE1); // SPI1 (ADC)
     can_init(&ctx);
 
     // Initialize watchdog and ADC
@@ -57,7 +48,7 @@ void setup() {
     // configure_sense(&ctx);
 
     check_memory(&ctx); // must be called to use SD card
-
+    balance_cells(&ctx, OFF);
     setup_timers(&ctx);
 
     // voltage poll and temperature poll take 16 and 24 milliseconds. The rest of
@@ -159,8 +150,7 @@ void loop() {
         println_with_args("Balance Mode Entered");
         balance_cells(&ctx, ON);
         while(1)
-            print_min_max(&ctx);
-            delay(20);
+            dump_data_to_serial();
     }
 
     case Mode::Debug: 
