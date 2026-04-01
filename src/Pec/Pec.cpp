@@ -44,9 +44,9 @@ uint16_t pec15_calc(
         addr = ((remainder >> 7) ^ data[i]) & 0xff; // calculate PEC table address
 
         #ifdef MBED
-            remainder = (remainder << 8) ^ crc15Table[addr];
+            remainder = (remainder << 8) ^ CRC15_TABLE[addr];
         #else
-            remainder = (remainder << 8) ^ pgm_read_word_near(crc15Table + addr);
+            remainder = (remainder << 8) ^ pgm_read_word_near(CRC15_TABLE + addr);
         #endif
     }
 

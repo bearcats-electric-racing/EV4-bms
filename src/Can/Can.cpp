@@ -41,7 +41,7 @@ CAN_message_t can_rx(ev4_t *ctx) {
 
 void can_tx(ev4_t *ctx) {
     measure_voltage(ctx);
-    measure_temp(ctx);
+    measure_cell_temp(ctx);
     uint8_t inst_power_limit = power_limit(ctx->max_cell_temp);
     println_with_args("Power Limit: %u", inst_power_limit);
 
@@ -55,14 +55,14 @@ void can_tx(ev4_t *ctx) {
     BMS_data.flags.extended = 0;
     BMS_data.len = 8; // Set the data length
 
-    BMS_data.buf[0] = float_2_uint8_t(ctx->soc, 0, 100);                      // SOC
-    BMS_data.buf[1] = float_2_uint8_t(ctx->currentbuffer_stat, 0, 250);       // current
-    BMS_data.buf[2] = float_2_uint8_t(ctx->max_cell_voltage, 2.00, 4.50);     // max cell voltage
-    BMS_data.buf[3] = float_2_uint8_t(ctx->max_cell_temp, 0, 75);             // max cell temp
-    BMS_data.buf[4] = float_2_uint8_t(ctx->min_cell_voltage, 2.00, 4.50);     // min cell voltage
-    BMS_data.buf[5] = float_2_uint8_t(ctx->min_cell_temp, 0, 75);             // min cell temp
-    BMS_data.buf[6] = inst_power_limit;                                       // BMS Suggested Power Limit
-    BMS_data.buf[7] = float_2_uint8_t(ctx->pack_voltage, 280, 600);           // Pack voltage
+    BMS_data.buf[0] = float_to_uint8_t(ctx->soc, 0, 100);                       // SOC
+    BMS_data.buf[1] = float_to_uint8_t(ctx->currentbuffer_stat, 0, 250);        // current
+    BMS_data.buf[2] = float_to_uint8_t(ctx->max_cell_voltage, 2.00, 4.50);      // max cell
+    BMS_data.buf[5] = float_to_uint8_t(ctx->max_cell_temp, 0, 75);              // max cell temp
+    BMS_data.buf[4] = float_to_uint8_t(ctx->min_cell_voltage, 2.00, 4.50);      // min cell voltage
+    BMS_data.buf[3] = float_to_uint8_t(ctx->min_cell_temp, 0, 75);              // min cell temp
+    BMS_data.buf[6] = inst_power_limit;                                         // BMS Suggested Power Limit
+    BMS_data.buf[7] = float_to_uint8_t(ctx->pack_voltage, 280, 600);            // Pack voltage
 
     if (ctx->can.write(BMS_data))
         Serial.println("CAN message sent 2");

@@ -101,7 +101,7 @@ void adc_poll(ev4_t *ctx, uint16_t command) {
     while (return_data == 0) {
         return_data = SPI.transfer(FULL_REG); // Send dummy byte to receive data
         num_polls++;
-        if(millis() - adc_poll_start_time > 1000){          // 1000ms is a made up number and should be reviewed
+        if (millis() - adc_poll_start_time > 1000) { // 1000ms is a made up number and should be reviewed
             Serial.println("ADC TImeout Error");
             break;
         }
