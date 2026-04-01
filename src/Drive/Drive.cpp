@@ -10,7 +10,7 @@ void drive_state(ev4_t *ctx, int t, CAN_message_t msg) {
 
         if (t % VOLT_INTERVAL == 0) {
             measure_voltage(ctx);
-            Serial.println("New volt");
+            Serial.println("New Volt");
             for (int i = 0; i < NUM_BOARDS; i++) {
                 for (int j = 0; j < NUM_CELLS; j++) {
                     ctx->voltage_buffer[int(t / VOLT_INTERVAL)][i][j] = ctx->cell_voltage[i][j];
@@ -18,13 +18,21 @@ void drive_state(ev4_t *ctx, int t, CAN_message_t msg) {
             }
         }
 
-        if (t % TEMP_INTERVAL == 0) {
-            Serial.println("New Temp");
-            measure_temp(ctx);
+        if (t % CELL_TEMP_INTERVAL == 0) {
+            Serial.println("New Cell Temp");
+            measure_cell_temp(ctx);
             for (int i = 0; i < NUM_BOARDS; i++) {
-                for (int j = 0; j < 10; j++) {
-                    ctx->temp_buffer[int(t / TEMP_INTERVAL)][i][j] = ctx->cell_temp[i][j];
+                for (int j = 0; j < NUM_THERMISTORS; j++) {
+                    ctx->cell_temp_buffer[int(t / CELL_TEMP_INTERVAL)][i][j] = ctx->cell_temp[i][j];
                 }
+            }
+        }
+
+        if (t % PCB_TEMP_INTERVAL == 0) {
+            Serial.println("New PCB Temp");
+            measure_pcb_temp(ctx);
+            for (int i = 0; i < NUM_TIMERS; i++) {
+                ctx->pcb_temp_buffer[int(t / PCB_TEMP_INTERVAL)][i] = ctx->pcb_temp[i];
             }
         }
 

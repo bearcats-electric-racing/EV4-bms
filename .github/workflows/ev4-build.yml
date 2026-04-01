@@ -1,0 +1,122 @@
+name: EV4 Build
+
+on:
+  push:
+    branches: ["EV4"]
+  pull_request:
+    branches: ["EV4"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+          cmake \
+          build-essential \
+          cpputest
+
+      - name: Run tests
+        run: |
+          make tdd
+
+  teensy-build:
+    name: PlatformIO Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Cache PlatformIO and pip
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio
+            .pio
+          key: platformio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            platformio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: |
+          pip install --upgrade platformio
+
+      - name: Build firmware
+        run: |
+          pio run -e teensy41
+
+      - name: Generate firmware size report
+        run: |
+          ELF=.pio/build/teensy41/firmware.elf
+          pio pkg exec -p toolchain-gccarmnoneeabi -- \
+            arm-none-eabi-size $ELF | tee firmware-size.txt
+
+      - name: Upload firmware size report
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-size
+          path: firmware-size.txt
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: teensy41-firmware
+          path: |
+            .pio/build/teensy41/firmware.hex
+            .pio/build/teensy41/firmware.elf
+
+  arduino-build:
+    name: Arduino Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache Arduino CLI data
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/Arduino/libraries
+            .pio
+          key: arduino-${{ runner.os }}-teensy
+          restore-keys: |
+            arduino-${{ runner.os }}-
+
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Configure Arduino CLI
+        run: |
+          arduino-cli config set board_manager.additional_urls \
+            https://www.pjrc.com/teensy/package_teensy_index.json
+          arduino-cli core update-index
+          arduino-cli core install teensy:avr
+
+      - name: Compile sketch
+        uses: arduino/compile-sketches@v1
+        with:
+          fqbn: teensy:avr:teensy41
+          sketch-paths: |
+            EV4-bms.ino
+          libraries: |
+            - source-url: https://github.com/tonton81/WDT_T4.git

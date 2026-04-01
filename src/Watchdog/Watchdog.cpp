@@ -14,20 +14,21 @@ void watchdog_init(ev4_t *ctx) {
         config.trigger = 11; /* in seconds, 0->128 */ // time until watchdog callback function is triggered.
         config.timeout = WATCHDOG_TIMEOUT; /* in seconds, 0->128 */ // time until watchdog reset
         config.pin = SC; // pin to be driven low upon reset. WDT1 holds low, WDT2 pulses low
-        config.callback = watchdog_callback_wrapper;
+        config.callback = watchdog_callback;
         ctx->wdt.begin(config);
     }
 }
 
-void watchdog_callback_wrapper() {
+void watchdog_callback() {
     if (wdt_ctx)
-        watchdog_callback(wdt_ctx);
+        watchdog_isr(wdt_ctx);
 }
 
-void watchdog_callback(ev4_t *ctx) {
+void watchdog_isr(ev4_t *ctx) {
     Serial.println("Callback called");
     measure_voltage(ctx);
-    measure_temp(ctx);
+    measure_cell_temp(ctx);
+    measure_pcb_temp(ctx);
     watchdog_reset(ctx);
     ctx->watchdog_callback = true; // set watchdog callback flag
 }
@@ -35,6 +36,21 @@ void watchdog_callback(ev4_t *ctx) {
 bool watchdog_reset(ev4_t *ctx) { // this needs to clear the voltage and temperature measurements after reading them
     ctx->new_voltage = false;
     ctx->new_temp = false;
+    ctx->new_freq = false;
+
+    if (ctx->max_cell_voltage - ctx->min_cell_voltage > MAX_DIFF){
+        digitalWrite(SC, LOW);
+        delay(1000); // delay to overcome debounce of shutdown circuit
+        Serial.println("Open fusible link detected - max voltage differential exceeded");
+        return false;
+    }
+
+    if (ctx->max_gpio_voltage > GPIO_OV){
+        digitalWrite(SC, LOW);
+        delay(1000); // delay to overcome debounce of shutdown circuit
+        Serial.println("Open thermistor detected - max GPIO voltage exceeded");
+        return false;
+    }
 
     if (ctx->max_cell_voltage - ctx->min_cell_voltage > MAX_DIFF){
         digitalWrite(SC, LOW);
@@ -65,22 +81,34 @@ bool watchdog_reset(ev4_t *ctx) { // this needs to clear the voltage and tempera
     }
 
     for (int i = 0; i < NUM_BOARDS; i++) {
-        for (int j = 0; j < 10; j++) {
+        for (int j = 0; j < NUM_THERMISTORS; j++) {
             if (ctx->cell_temp[i][j] > MIN_TEMP && ctx->cell_temp[i][j] < MAX_TEMP) {
                 ctx->cell_temp[i][j] = MIN_TEMP;
                 continue;
             } else {
                 digitalWrite(SC, LOW);
                 delay(1000); // delay to overcome debounce of shutdown circuit
-                println_with_args("Invalid temp -> Board: %d | Num: %d", i + 1, j + 1);
+                println_with_args("Invalid cell temp -> Board: %d | Cell: %d", i + 1, j + 1);
                 return false;
             }
         }
     }
 
-    digitalWrite(20, HIGH);
+    for (int i = 0; i < NUM_TIMERS; i++) {
+        if (ctx->pcb_temp[i] > MIN_TEMP && ctx->pcb_temp[i] < MAX_TEMP) { // TODO: Check if these min/max temps hold for pcb as well
+            ctx->pcb_temp[i] = MIN_TEMP;
+            continue;
+        } else {
+            digitalWrite(SC, LOW);
+            delay(1000); // delay to overcome debounce of shutdown circuit
+            println_with_args("Invalid pcb temp -> Pin: ", ctx->timer_list[i].pin);
+            return false;
+        }
+    }
+
+    digitalWrite(SC, HIGH);
     ctx->wdt.feed();
-    if(ctx->cfg.debug)
+    if (ctx->cfg.debug)
         Serial.println("Watchdog fed");
     return true;
 }

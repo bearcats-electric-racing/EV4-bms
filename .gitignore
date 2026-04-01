@@ -2,3 +2,5 @@
 .pio
 src/*.csv
 build
+.DS_Store
+.pio
