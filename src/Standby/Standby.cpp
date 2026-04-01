@@ -10,7 +10,7 @@ void standby_state(ev4_t *ctx) {
         measure_pcb_temp(ctx);
         watchdog_reset(ctx);
 
-        CAN_message_t msg = can_rx(ctx);
+        // CAN_message_t msg = can_rx(ctx);
 
         // BYPASSED PRECHARGE CHECK - FIX IN FUTURE BY PULLING DATA FROM ECU
         // if (msg.id == INV_TX_ID) 
