@@ -12,7 +12,7 @@ void can_init(ev4_t* ctx) {
     // Mailboxes must be configured for all messages - both TX and RX
     ctx->can.setMB((FLEXCAN_MAILBOX)0, RX, STD); // Standard mailbox for Inverter ID
     ctx->can.setMB((FLEXCAN_MAILBOX)1, RX, EXT); // Extended id for charger
-    ctx->can.setMB((FLEXCAN_MAILBOX)2, TX, STD); // BMS TX -> charger id
+    ctx->can.setMB((FLEXCAN_MAILBOX)2, TX, EXT); // BMS TX -> charger id
     ctx->can.setMBFilter(MB0, INV_TX_ID);        // Mailbox for Inverter CAN messages
     ctx->can.setMBFilter(MB1, CHG_TX_ID);        // Mailbox for Charger CAN Messages
     ctx->can.setMBFilter(MB2, 0x1806E5F4);       // Mailbox for Charger CAN Messages
