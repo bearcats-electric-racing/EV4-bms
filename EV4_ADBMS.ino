@@ -85,7 +85,7 @@ void setup() {
     if (ctx.mode == Mode::Init) {
         measure_voltage(&ctx);
         //measure_current(&ctx);
-        //soc_update(&ctx);
+        soc_update(&ctx);
 
         CAN_message_t msg;
         bool CAN_baud_alt = true;
@@ -93,32 +93,45 @@ void setup() {
         while (1) {
             Serial.println("Setup");
             //measure_current(&ctx);
-            measure_voltage(&ctx);
+            //measure_voltage(&ctx);
             //cell_open_wire_check(&ctx);
             //measure_temp(&ctx);
+               
+            can_tx(&ctx); // wrong baud rate every other message
 
-            //can_tx(&ctx); // wrong baud rate every other message
+            Serial.println("can_tx complete");
             //print_min_max(&ctx);
             //watchdog_reset(&ctx);
-            //msg = can_rx(&ctx);
-
+            msg = can_rx(&ctx);
+            Serial.println("can_rx done");
+            
             /*
             // Alternate CAN baud rate (250000 for charger, 500000 for vehicle)
             if (CAN_baud_alt) {
+                Serial.println("CAN_baud_alt");
                 ctx.can.setBaudRate(500000);
+                Serial.println("Set new baud rate");
                 CAN_baud_alt = false;
             } else {
+                Serial.println("NOT CAN_baud_alt");
                 ctx.can.setBaudRate(250000);
+                Serial.println("Set new baud rate");
                 CAN_baud_alt = true;
             }
-
-            if (determine_mode(&ctx, msg, CAN_baud_alt)) 
-                break;
             */
+
+            //Serial.println("Calling determine_mode");
+            //if (determine_mode(&ctx, msg, CAN_baud_alt)) 
+            //    break;
+            //Serial.println("Determine mode done");
             
+            // TEMPORARY NEEDS TO BE REMOVED
+            ctx.wdt.feed();
 
             //delay(20);
-            delay(200);
+            Serial.println("Loop complete");
+            //delay(500);
+            //Serial.println("Loop delay complete");
         }
     }
 }

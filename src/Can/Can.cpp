@@ -1,24 +1,25 @@
 #include "Can.h"
 
 void can_init(ev4_t* ctx) {
-    pinMode(CRX3, INPUT);
-    pinMode(CTX3, OUTPUT);
+    pinMode(CRX1, INPUT);
+    pinMode(CTX1, OUTPUT);
     pinMode(STBY, OUTPUT);
     ctx->can.begin();
-    ctx->can.setBaudRate(250000);
+    ctx->can.setBaudRate(500000);
     ctx->can.setMaxMB(3); // number of CAN message mailboxes
     digitalWrite(STBY, LOW);
     // https://github.com/tonton81/FlexCAN_T4/blob/master/examples/mailbox_filtering_example_with_interrupts/mailbox_filtering_example_with_interrupts.ino
     // Mailboxes must be configured for all messages - both TX and RX
     ctx->can.setMB((FLEXCAN_MAILBOX)0, RX, STD); // Standard mailbox for Inverter ID
     ctx->can.setMB((FLEXCAN_MAILBOX)1, RX, EXT); // Extended id for charger
-    ctx->can.setMB((FLEXCAN_MAILBOX)2, TX, EXT); // BMS TX -> charger id
+    ctx->can.setMB((FLEXCAN_MAILBOX)2, TX, STD); // BMS TX -> charger id
     ctx->can.setMBFilter(MB0, INV_TX_ID);        // Mailbox for Inverter CAN messages
     ctx->can.setMBFilter(MB1, CHG_TX_ID);        // Mailbox for Charger CAN Messages
     ctx->can.setMBFilter(MB2, 0x1806E5F4);       // Mailbox for Charger CAN Messages
 }
 
 CAN_message_t can_rx(ev4_t *ctx) {
+    Serial.println("Called can_rx");
     // left bit in charger flag is highest bit (bit 4)
     CAN_message_t msg = {};
     digitalWrite(STBY, LOW);
@@ -40,13 +41,14 @@ CAN_message_t can_rx(ev4_t *ctx) {
 }
 
 void can_tx(ev4_t *ctx) {
+    Serial.println("Called can_TX");
     measure_voltage(ctx);
     measure_temp(ctx);
     uint8_t inst_power_limit = power_limit(ctx->max_cell_temp);
     println_with_args("Power Limit: %u", inst_power_limit);
 
     digitalWrite(STBY, LOW);
-    digitalWrite(CTX3, HIGH);
+    digitalWrite(CTX1, HIGH);
     delay(1);
 
     CAN_message_t BMS_data;
@@ -64,10 +66,22 @@ void can_tx(ev4_t *ctx) {
     BMS_data.buf[6] = inst_power_limit;                                       // BMS Suggested Power Limit
     BMS_data.buf[7] = float_2_uint8_t(ctx->pack_voltage, 280, 600);           // Pack voltage
 
+    /*
+    println_with_args("SOC: %f", ctx->soc);
+    println_with_args("Current: %f", ctx->currentbuffer_stat);
+    println_with_args("Max cell voltage: %f", ctx->max_cell_voltage);
+    println_with_args("Max cell temp: %f", ctx->max_cell_temp);
+    println_with_args("Min cell voltage: %f", ctx->min_cell_voltage);
+    println_with_args("Min cell temp: %f", ctx->min_cell_temp);
+    println_with_args("Power Limit: %u", inst_power_limit);
+    println_with_args("Pack voltage: %f", ctx->pack_voltage);
+    */
+
+    Serial.println("Sending CAN message...");
     if (ctx->can.write(BMS_data))
-        Serial.println("CAN message sent 2");
+        Serial.println("CAN message sent MB2");
     else
         Serial.println("CAN message TX Failed");
 
-    digitalWrite(CTX3, LOW);
+    digitalWrite(CTX1, LOW);
 }

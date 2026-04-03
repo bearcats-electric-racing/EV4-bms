@@ -16,7 +16,7 @@ void configure_charger(ev4_t *ctx, bool enable, uint16_t charger_current) {
         return;
 
     digitalWrite(STBY, LOW);
-    digitalWrite(CTX3, HIGH);
+    digitalWrite(CTX1, HIGH);
     delay(1);
 
     CAN_message_t CHGR_EN;
@@ -43,7 +43,7 @@ void configure_charger(ev4_t *ctx, bool enable, uint16_t charger_current) {
         Serial.print(" ");
     }
 
-    digitalWrite(CTX3, LOW);
+    digitalWrite(CTX1, LOW);
 
     if (!message_sent)
     {
