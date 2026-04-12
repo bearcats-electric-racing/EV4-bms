@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 typedef struct config_t {
-    bool debug = 0;
+    bool debug = 1;
     float balance_threshold = 3.0;       // will not balance cells below this threshold (V)
     float balance_precision = 0.01;      // Will balance cells to this tolerance
     float _qt = 12.6 * 60;               // total capacity (coulumbs): total capacity (Ah) * 60s/1hr
@@ -22,7 +22,7 @@ const int WATCHDOG_TIMEOUT = 10;         // watchdog timeout (in seconds). setti
 const float open_wire_threshold = 0.30; // % voltage attenuation tolerance during open wire check - attenuation exceeding this value will flag an open wire
 
 // Architecture
-const int NUM_BOARDS = 2;
+const int NUM_BOARDS = 1;
 const int NUM_CELLS = 14;               // cells per board
 const int NUM_PARALLEL = 1;
 
