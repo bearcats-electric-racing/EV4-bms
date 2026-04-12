@@ -49,10 +49,10 @@ void setup() {
     SPI1.begin();
     SPI1.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE1));
     Serial.println("SPI1 Initialized");
-    */
+    
 
-    can_init(&ctx);
-    Serial.println("CAN Initialized");
+    // can_init(&ctx);
+    // Serial.println("CAN Initialized");
 
     // Initialize watchdog and ADC
     watchdog_init(&ctx);
@@ -73,8 +73,8 @@ void setup() {
     // Bring up references on sense boards
     // configure_sense(&ctx);
 
-    check_memory(&ctx); // must be called to use SD card
-    Serial.println("SD Checked");
+    // check_memory(&ctx); // must be called to use SD card
+    // Serial.println("SD Checked");
 
     //balance_cells(&ctx, OFF);       // No cell balancing by default
     //Serial.println("Balance Disabled");
@@ -84,26 +84,26 @@ void setup() {
 
     if (ctx.mode == Mode::Init) {
         measure_voltage(&ctx);
-        //measure_current(&ctx);
-        soc_update(&ctx);
+        // measure_current(&ctx);
+        // soc_update(&ctx);
 
-        CAN_message_t msg;
-        bool CAN_baud_alt = true;
+        // CAN_message_t msg;
+        // bool CAN_baud_alt = true;
 
         while (1) {
             Serial.println("Setup");
             //measure_current(&ctx);
-            //measure_voltage(&ctx);
+            measure_voltage(&ctx);
             //cell_open_wire_check(&ctx);
             //measure_temp(&ctx);
                
-            can_tx(&ctx); // wrong baud rate every other message
+            // can_tx(&ctx); // wrong baud rate every other message
 
-            Serial.println("can_tx complete");
+            // Serial.println("can_tx complete");
             //print_min_max(&ctx);
             //watchdog_reset(&ctx);
-            msg = can_rx(&ctx);
-            Serial.println("can_rx done");
+            // msg = can_rx(&ctx);
+            // Serial.println("can_rx done");
             
             /*
             // Alternate CAN baud rate (250000 for charger, 500000 for vehicle)
@@ -129,8 +129,8 @@ void setup() {
             ctx.wdt.feed();
 
             //delay(20);
-            Serial.println("Loop complete");
-            //delay(500);
+            // Serial.println("Loop complete");
+            delay(500);
             //Serial.println("Loop delay complete");
         }
     }

@@ -166,13 +166,13 @@ void read_register_group(ev4_t *ctx, uint16_t command, uint8_t response[NUM_BOAR
        
     }
 
-    /*
+    
     // Debug code
     Serial.print("response pec ");
     Serial.println(rx_pec10, HEX);
     Serial.print("calculated pec ");
     Serial.println(calc_pec10, HEX);
-    */
+    
 
     digitalWrite(CS, HIGH);
 }
