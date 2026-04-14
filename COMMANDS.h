@@ -50,6 +50,8 @@ extern int wire_cut;        //indicates position of wire break . "0" indicates n
 #define OW_EVEN  (0b0000000000000001)         // Cell Open Wire Even Bits
 #define ITEMP    (0b0000000001000011)         // Die Temperature Bits
 
+#define ADSTAT   0b000010001101010            // EV3 configure_sense artifact
+
 //// configuration dependent commands ////
 
            //       0      1      2     3     4     5     6      7
@@ -64,15 +66,5 @@ extern int wire_cut;        //indicates position of wire break . "0" indicates n
 //stat_conv_delays =  [742, 858, 1556, 2022, 2953, 4814, 8538, 134211];     //conversion time (in microseconds) of ADCs to measure status based on ADC frequency
            //        27kHz  14kHz  7kHz   3kHz 2kHz  1kHz  422Hz  26Hz
 //stat_conv_delay = stat_conv_delays[ADC_mode];
-
-#define ADCV     0b0000001001100000      //Start Start Cell Voltage ADC Conversion and Poll Status
-#define ADCV_1_7_13     0b0000001001100000      //Start Start Cell Voltage ADC Conversion and Poll Status for C1,7,13
-//#define ADCV     0b0000001011100000      //Start Start Cell Voltage ADC Conversion and Poll Status
-#define ADAX     0b0000010001100000      //Start Start Cell Voltage ADC Conversion and Poll Status
-
-#define AXOW     0b0000010001010000
-
-#define ADSTAT   0b000010001101010
-
 
 #endif

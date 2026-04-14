@@ -66,12 +66,14 @@ float inv_voltage = 0;
 float cell_voltage[num_boards][num_cells];  //most recent cell voltages
 float open_circuit_voltage[num_boards][num_cells];
 float pack_voltage = 0;          //sum of cell voltages
-float cell_temp[num_boards][9];  //most recent cell temperatures. Contans raw voltage data for the duration of open wire checks
+float cell_temp[num_boards][10];  //most recent cell temperatures. Contans raw voltage data for the duration of open wire checks
 float die_temps[num_boards];     //most recent sense board LTC6813 die temps
 float min_cell_voltage = 0;
 float max_cell_voltage = 0;
 float min_cell_temp = 0;
 float max_cell_temp = 0;
+float min_die_temp = 0;
+float max_die_temp = 0;
 
 //sense board flags
 float GPIO_open_wire[num_boards][9];
@@ -164,6 +166,31 @@ void setup() {
 
 
   if (mode == "") {
+
+    //TEMPORARY time measurement loop
+    uint32_t t1;
+    uint32_t t2;
+    while(1){
+
+      t1 = millis();
+      measure_voltage();
+      t2 = millis();
+      Serial.print("Voltage measurement time: ");
+      Serial.print(t2-t1);
+      Serial.println(" ms");
+
+      t1 = millis();
+      measure_temp();
+      t2 = millis();
+      Serial.print("Temp measurement time: ");
+      Serial.print(t2-t1);
+      Serial.println(" ms");
+
+      delay(500);
+
+    }
+
+
     measure_voltage();
     measure_current();
     update_SOC();
@@ -192,6 +219,7 @@ void setup() {
       
       String input = Serial.readStringUntil('\n');
       input.trim();
+      
       if (msg.id == INV_TX_ID && false) {  //Always check msg id. Stdby has not yet been tested
         mode = "standy";
         can.setBaudRate(500000);
@@ -210,7 +238,9 @@ void setup() {
         mode = "debug";
         break;
       }
+      
       delay(20);
+      Serial.println("End of Setup Loop");
     }
   }
 }
@@ -479,15 +509,6 @@ void read_ADC() {
 
 
 void print_min_max() {  //This function prints the min and max parameters
-  float min_cell_voltage = cell_voltage[0][0];
-  float max_cell_voltage = cell_voltage[0][0];
-  float min_cell_temp = cell_temp[0][0];
-  float max_cell_temp = cell_temp[0][0];
-  float min_die_temp = die_temps[0];
-  float max_die_temp = die_temps[0];
-  min_max<num_boards, num_cells>(cell_voltage, &min_cell_voltage, &max_cell_voltage);
-  min_max<num_boards, 9>(cell_temp, &min_cell_temp, &max_cell_temp);
-  min_max<1, num_boards>(&die_temps, &min_die_temp, &max_die_temp);  //This is how you pass a 1D array to the min_max function
   Serial.print("Max cell voltage: ");
   Serial.println(max_cell_voltage);
   Serial.print("Min cell_voltage: ");
@@ -896,84 +917,66 @@ void measure_voltage() {  //18 millisecond execution time
 }
 
 float map_temp(float V) {
-  int const size = sizeof(NTC_LUT) / sizeof(NTC_LUT[0]);
-  float R_bias = 10000;
-  float V_ref = 3.00;
-
-  if (V_ref == V) {  //divide by zero case
+    int const size = sizeof(NTC_LUT) / sizeof(NTC_LUT[0]);
+    float R_bias = 10000;
+    float V_ref = 3.00;
+    
+    if (V_ref == V) // divide by zero case
     return -55;
-  }
-
-  float NTC_res = (V / V_ref * R_bias) / (1 - V / V_ref);
-
-  // int i = 0;
-  // float dist = std::abs(NTC_res - NTC_LUT[0]);
-  // for(i = 1; i<size; i++){
-  //   float new_dist = std::abs(NTC_res - NTC_LUT[i]);
-  //   if(new_dist < dist){
-  //     dist = new_dist;
-  //   }
-  //   else{
-  //     i--;
-  //     break;
-  //   }
-  // }
-
-  int i = search<size>(NTC_LUT, NTC_res);
-  float temperature = float(i) / float(size) * (150 + 55) - 55;
-  //temperature = V;
-  return (temperature);
+    
+    float NTC_res = (V / V_ref * R_bias) / (1 - V / V_ref);
+    int i = search<size>(NTC_LUT, NTC_res);
+    float temperature = float(i) / float(size) * (150 + 55) - 55;
+    return (temperature);
 }
 
 void measure_temp(bool open_wire_check) {  //25 millisecond execution time
 
-  uint8_t response[num_boards][6];
-  uint16_t aux_comm[4] = { RDAUXA, RDAUXB, RDAUXC, RDAUXD };  //read aux registers A through D commands
-  int temp_num = 0;                                           //temperature reading index 0-8
-  int command_num = 0;                                        //command index within aux_comm array
+    uint8_t response[num_boards][6];
+    uint16_t aux_comm[4] = {RDAUXA, RDAUXB, RDAUXC, RDAUXD}; // read aux registers A through D commands
+    int thermistor_idx = 0; // thermistor index 0-9
+    int command_idx = 0; // command index within aux_comm array
 
-  if (open_wire_check == false) {
-    poll_ADC(ADAX);  //initiate and wait for GPIO measurement
-  } else {
-    poll_ADC(AXOW);
-  }
+    poll_ADC(ADAX);
 
-  while (temp_num < 9) {
-    uint16_t curr_comm = aux_comm[command_num];  //each command reads a sequential set of three GPIO from each board (RDAUXB is an exception with just 2 GPIO)
-    read_register_group(curr_comm, response);
-    for (int k = 0; k < 3 && temp_num < 9; k++) {
-      if (command_num == 1 && k > 1) {  //register group B only contains 2 GPIO measurements
-        continue;
-      }
-      for (int j = 0; j < num_boards; j++) {                                                                     //maximum of 3 GPIO per register group and 9 thermistors
-        cell_temp[j][temp_num] = (float)(((uint8_t)response[j][k * 2 + 1] << 8) | response[j][k * 2]) * 0.0001;  //LSB represents 100 uV
-                                                                                                                 //Serial.println(cell_temp[j][temp_num]);
-      }
-      temp_num++;
+    while (thermistor_idx < 10) {
+        uint16_t curr_comm = aux_comm[command_idx];     // each command reads a sequential set of
+                                                        // three GPIO from each board (RDAUXB is an
+                                                        // exception with just 2 GPIO)
+        read_register_group(curr_comm, response);
+        for (int reading = 0; reading < 3 && thermistor_idx < 10; reading++) { // GPIO reading within group (~3 per group)
+            if (command_idx == 3 && reading > 0) // Group register D has 1 reading only
+                continue;
+
+            for (int b = 0; b < num_boards; b++) {
+                int16_t adc_code = (int16_t)(((uint16_t)response[b][reading * 2 + 1] << 8) | response[b][reading * 2]);
+                cell_temp[b][thermistor_idx] = (float)adc_code * 0.00015f + 1.5f; // LSB represents 150 uV, +1.5v offset
+            }
+            thermistor_idx++;
+        }
+        command_idx++;
     }
-    command_num++;
-  }
 
-  for (int i = 0; i < num_boards; i++) {
-    for (int j = 0; j < 9; j++) {
-      cell_temp[i][j] = map_temp(cell_temp[i][j]);
+    for (int i = 0; i < num_boards; i++)
+        for (int j = 0; j < 10; j++)
+            cell_temp[i][j] = map_temp(cell_temp[i][j]);
+
+    new_temp = true;
+
+    // Update min, max temp
+    min_max<num_boards, 10>(cell_temp, &min_cell_temp, &max_cell_temp);
+
+    if (debug) {
+        Serial.println("Temperatures:");
+        for (int i = 0; i < num_boards; i++) {
+            print_with_args("\tBoard: %d\n\t", i + 1);
+            
+            for (int j = 0; j < 10; j++) {
+                print_with_args("%f ", cell_temp[i][j]);
+            }
+            Serial.println("");
+        }
     }
-  }
-
-  new_temp = true;
-
-  if (debug) {
-    Serial.println("Tempearatures:");
-    for (int i = 0; i < num_boards; i++) {
-      Serial.print("board: ");
-      Serial.println(i + 1);
-      for (int j = 0; j < 9; j++) {
-        Serial.print(cell_temp[i][j]);
-        Serial.print(" ");
-      }
-      Serial.println("");
-    }
-  }
 }
 
 bool reset_watchdog() {  //this needs to clear the voltage and temperature measurements after reading them
@@ -1087,14 +1090,6 @@ void charger_enable(bool enable) {
 void TX_CAN() {
   measure_voltage();
   measure_temp();
-  float min_cell_voltage = cell_voltage[0][0];
-  float max_cell_voltage = cell_voltage[0][0];
-  float min_cell_temp = cell_temp[0][0];
-  float max_cell_temp = cell_temp[0][0];
-  float min_die_temp = die_temps[0];
-  float max_die_temp = die_temps[0];
-  min_max<num_boards, num_cells>(cell_voltage, &min_cell_voltage, &max_cell_voltage);
-  min_max<num_boards, 9>(cell_temp, &min_cell_temp, &max_cell_temp);
   uint8_t inst_power_limit = power_limit(max_cell_temp);
   Serial.print("Power Limit: ");
   Serial.println(inst_power_limit);
@@ -1110,14 +1105,14 @@ void TX_CAN() {
   BMS_data.flags.extended = 0;
   BMS_data.len = 8;  // Set the data length
 
-  BMS_data.buf[0] = float_2_uint8_t(soc, 0, 100);                 //SOC
-  BMS_data.buf[1] = float_2_uint8_t(currentbuffer_stat, 0, 200);  //current
-  BMS_data.buf[2] = float_2_uint8_t(max_cell_voltage, 0, 5);      //max cell
-  BMS_data.buf[3] = float_2_uint8_t(max_cell_temp, 0, 150);       // max cell temp
-  BMS_data.buf[4] = float_2_uint8_t(min_cell_voltage, 0, 5);      // min cell voltage
-  BMS_data.buf[5] = float_2_uint8_t(max_cell_temp, 0, 150);       // min cell temp
-  BMS_data.buf[6] = inst_power_limit;                             // BMS Suggested Power Limit
-  BMS_data.buf[7] = 0;
+  BMS_data.buf[0] = float_2_uint8_t(soc, 0, 100);                       // SOC
+  BMS_data.buf[1] = float_2_uint8_t(currentbuffer_stat, 0, 250);        // current
+  BMS_data.buf[2] = float_2_uint8_t(max_cell_voltage, 2.00, 4.50);      // max cell
+  BMS_data.buf[5] = float_2_uint8_t(max_cell_temp, 0, 75);              // max cell temp
+  BMS_data.buf[4] = float_2_uint8_t(min_cell_voltage, 2.00, 4.50);      // min cell voltage
+  BMS_data.buf[3] = float_2_uint8_t(min_cell_temp, 0, 75);              // min cell temp
+  BMS_data.buf[6] = inst_power_limit;                                         // BMS Suggested Power Limit
+  BMS_data.buf[7] = float_2_uint8_t(pack_voltage, 280, 600);            // Pack voltage
 
   if (can.write(BMS_data)) {
     Serial.println("CAN message sent 2");
