@@ -166,31 +166,6 @@ void setup() {
 
 
   if (mode == "") {
-
-    //TEMPORARY time measurement loop
-    uint32_t t1;
-    uint32_t t2;
-    while(1){
-
-      t1 = millis();
-      measure_voltage();
-      t2 = millis();
-      Serial.print("Voltage measurement time: ");
-      Serial.print(t2-t1);
-      Serial.println(" ms");
-
-      t1 = millis();
-      measure_temp();
-      t2 = millis();
-      Serial.print("Temp measurement time: ");
-      Serial.print(t2-t1);
-      Serial.println(" ms");
-
-      delay(500);
-
-    }
-
-
     measure_voltage();
     measure_current();
     update_SOC();
@@ -979,10 +954,101 @@ void measure_temp(bool open_wire_check) {  //25 millisecond execution time
     }
 }
 
+// 37ms execution time
+void cell_open_wire_check() {
+    uint8_t response[num_boards][6];                    // ADBMS6830B response
+    float s_voltage_open[num_boards][num_cells];        // S voltage values, OW switch open (baseline)
+    float s_voltage_closed[num_boards][num_cells];      // S voltage values, OW switch closed
+    bool open_wire_flags[num_boards][num_cells] = {false};
+    bool open_wire = 0;
+
+    uint16_t cell_comm[6] = {
+        RDSVA, RDSVB, RDSVC,
+        RDSVD, RDSVE, RDSVF
+    }; // read S voltage registers A through F commands
+
+    /*
+    Open Wire Check Sequence:
+        1.) poll ADC for baseline s voltage, read register groups
+        2.) poll ADC with even open-wire check, read register groups
+        3.) poll ADC with odd open-wire check, read register groups
+        After Loop: Check for out of tolerance differences between open / closed wire
+    */
+
+    for (uint8_t i = 0; i < 3; i++){
+        if(i == 0){
+            poll_ADC(ADSV);                // S-ADC poll, OW switches open
+        }
+        else if(i == 1){
+            poll_ADC(ADSV | OW_EVEN);      // S-ADC poll, even OW switches closed
+        }
+        else if(i == 2){
+            poll_ADC(ADSV | OW_ODD);       // S-ADC poll, odd OW switches closed
+        }
+
+        for (int j = 0; j * 3 < num_cells; j++) { // i: cell group (3 cells per register group)
+            // Serial.print('j');
+            // Serial.println(j);
+            uint16_t curr_comm = cell_comm[j]; // each command reads a sequential set
+                                            // of three cells from each board
+            read_register_group(curr_comm, response);
+            for (int k = 0; k < num_boards; k++) { // j: board number
+                // Serial.print('k');
+                // Serial.println(k);
+                for (int l = 0; l < 3 && j * 3 + l < num_cells; l++) { // cell within cell group
+                    // Serial.print('l');
+                    // Serial.println(l);
+                    int16_t adc_code = (int16_t)(((uint16_t)response[k][l * 2 + 1] << 8) | response[k][l * 2]);
+                    
+                    // Initial loop, write all baseline voltages to s_voltage_open
+                    if(i == 0){
+                        s_voltage_open[k][j * 3 + l] = (float)adc_code * 0.00015f + 1.5f; // LSB represents 150 uV, +1.5v offset
+                    }
+                    // Loop 1, write even cells only (note: index 0 = cell 1)
+                    else if(i == 1){
+                        if((j * 3 + l) % 2){
+                            s_voltage_closed[k][j * 3 + l] = (float)adc_code * 0.00015f + 1.5f;
+                        }
+                    }
+                    // Loop 2, write odd cells only
+                    else if(i == 2){
+                        if( !((j * 3 + l) % 2)) {
+                            s_voltage_closed[k][j * 3 + l] = (float)adc_code * 0.00015f + 1.5f;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check for out of tolerance voltage drops
+    for (int i = 0; i < num_boards; i++){
+        for (int j = 0; j < num_cells; j++){
+            if(s_voltage_closed[i][j] < (s_voltage_open[i][j] * (1.00f - open_wire_threshold)) ){
+                open_wire_flags[i][j] = 1;
+                open_wire = 1;
+                if(debug){
+                    Serial.println("Open Voltage Sense Lead!");
+                    print_with_args("Board: %d Cell: %d", i + 1, j + 1);
+                }
+            }
+        }
+    }
+
+    if(open_wire){
+        digitalWrite(20, LOW);
+        delay(1000); // delay to overcome debounce of shutdown circuit
+        Serial.println("Open voltage sense lead detected");
+    }
+
+
+}
+
 bool reset_watchdog() {  //this needs to clear the voltage and temperature measurements after reading them
   new_voltage = false;
   new_temp = false;
 
+  // Check cell voltages
   for (int i = 0; i < num_boards; i++) {
     for (int j = 0; j < num_cells; j++) {
       if (cell_voltage[i][j] < OV && cell_voltage[i][j] > UV) {
@@ -998,6 +1064,7 @@ bool reset_watchdog() {  //this needs to clear the voltage and temperature measu
     }
   }
 
+  // Check temperatures
   for (int i = 0; i < num_boards; i++) {
     for (int j = 0; j < 9; j++) {
       if (cell_temp[i][j] > min_temp && cell_temp[i][j] < max_temp) {
@@ -1014,6 +1081,15 @@ bool reset_watchdog() {  //this needs to clear the voltage and temperature measu
       }
     }
   }
+
+  // Check for open fusible links
+    if (max_cell_voltage - min_cell_voltage > max_diff){
+        digitalWrite(20, LOW);
+        delay(1000); // delay to overcome debounce of shutdown circuit
+        Serial.println("Open fusible link detected - max voltage differential exceeded");
+        return false;
+    }
+
   digitalWrite(20, HIGH);
   wdt.feed();
   //Serial.println("Watchdog fed");
@@ -1052,6 +1128,14 @@ void measure_current() {
 
 
 void charger_enable(bool enable) {
+  uint16_t chg_current;
+  if (soc < 80)
+        chg_current = CHG_current1;
+    else if (soc < 90)
+        chg_current = CHG_current2;
+    else
+        chg_current = CHG_current3; 
+
   digitalWrite(STBY, LOW);
   digitalWrite(CTX3, HIGH);
   delay(1);
@@ -1064,7 +1148,7 @@ void charger_enable(bool enable) {
   //7FF max CAN ID
 
   uint16_t voltage_int = (uint16_t)(CHG_voltage * 10);
-  uint16_t current_int = (uint16_t)(CHG_current * 10);
+  uint16_t current_int = (uint16_t)(chg_current * 10);
 
 
   CHGR_EN.buf[0] = (uint8_t)(voltage_int >> 8);  // High byte
@@ -1200,6 +1284,7 @@ void configure_sense() {
   write_register_group(WRCFGA, data_arr);
 }
 
+/*
 void balance(bool keep_going) {
   bool discharge[num_boards][18] = { 0 };  //'1': needs dischaged, '0': does not need discharged
   float min = cell_voltage[0][0];
@@ -1235,6 +1320,7 @@ void balance(bool keep_going) {
     balance_threshold = min;
   }
 }
+*/
 
 void sense_status() {  //really should be the measure die temp function
   uint8_t response[num_boards][6];

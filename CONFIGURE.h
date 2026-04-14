@@ -8,12 +8,13 @@
 bool debug = 1;
 
 //Safe operating conditions
-const float max_temp = 60;
+const float max_temp = 58;
 const float min_temp = 0;
 const float OV = 4.20;       //over-voltage limit (spelled with an "oh" not zero) (V)
 const float UV = 2.5;       //under-voltage limit (V)
-const float max_diff = 1.7;   //max difference between min and max cell for open parallel cell detection
-const int watchdog_timeout = 0;  //watchdog timeout (in seconds). setting to 0 will DISABLE timer. Watchdog timer must be grester thatn 6 secibds
+const float max_diff = 0.75;   //max difference between min and max cell for open parallel cell detection. Set to ~0.1v.
+const int watchdog_timeout = 0;  //watchdog timeout (in seconds). setting to 0 will DISABLE timer. Watchdog timer must be greater than 6 seconds
+const float open_wire_threshold = 0.30; // % voltage attenuation tolerance during open wire check - attenuation exceeding this value will flag an open wire
 
 //architecture
 const int num_boards = 1;
@@ -28,14 +29,15 @@ uint16_t BMS_ID = 0x123;             //standard ID of BMS TX messages
 uint32_t INV_TX_ID = 0x0A7;         //CAN Message ID of message send from inverter of DC Bus Voltage (100 Hz frequency).
 uint32_t CHG_TX_ID = 0x18FF50E5;    //CAN Message ID of messages sent from charger
 
-//charging parameters
-uint16_t CHG_voltage = 357;
-uint16_t CHG_current = 8;
-float _qt = 12.6 * 60; //total capacity (coulumbs): total capacity (Ah) * 60s/1hr
+// Charging parameters
+const uint16_t CHG_voltage = 588;
+const uint16_t CHG_current1 = 9; // up to 80% SOC
+const uint16_t CHG_current2 = 6; // 80% to 90% SOC
+const uint16_t CHG_current3 = 4; // 90% to 100% SOC
 
 //balancing parameters
-float balance_threshold = 4.2;    //will not balance cells below this threshold (V)
-float max_differnce = 0.3;    //will not continue charging if max-min cell exceeds this threshold
+const float balance_threshold = 3.0;       // will not balance cells below this threshold (V)
+const float balance_precision = 0.01;      // Will balance cells to this tolerance
 
 //sense board parameters
 int ADC_mode = 0;     //integer 0-7 to set ADC sampling frequency
