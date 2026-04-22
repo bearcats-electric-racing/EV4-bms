@@ -768,16 +768,20 @@ void read_register_group(uint16_t command, uint8_t response[num_boards][6]) {  /
           wakeup_sleep(NUM_BOARDS + 1);
       }
       */
-      
-      
+
+      // Debug Print
+      if(debug){
+        if((rx_pec10 != calc_pec10) || true){
+          //Serial.println("PEC mismatch!");
+          Serial.print("response PEC ");
+          Serial.println(rx_pec10, HEX);
+          Serial.print("calculated PEC ");
+          Serial.println(calc_pec10, HEX);
+        }
+      }
+
   }
 
-  
-  // Debug code
-  Serial.print("response pec ");
-  Serial.println(rx_pec10, HEX);
-  Serial.print("calculated pec ");
-  Serial.println(calc_pec10, HEX);
   
 
   digitalWrite(CS, HIGH);
