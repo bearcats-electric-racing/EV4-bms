@@ -17,8 +17,8 @@ const int watchdog_timeout = 0;  //watchdog timeout (in seconds). setting to 0 w
 const float open_wire_threshold = 0.30; // % voltage attenuation tolerance during open wire check - attenuation exceeding this value will flag an open wire
 
 //architecture
-const int num_boards = 2;
-const int num_cells = 16;       //cells per board
+const int num_boards = 1;
+const int num_cells = 14;       //cells per board
 const int num_parrallel = 1;
 
 //BMS operation mode. Leave as empty string to determine mode during runtime

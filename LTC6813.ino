@@ -13,6 +13,7 @@
 #include <algorithm>
 
 #include <SD.h>
+#include <EEPROM.h>
 
 //CAN pins
 #define CRX3 23
@@ -33,16 +34,51 @@ unsigned int sense_watchdog_timer;  //senseboard watchdog timer. Sense boards wi
 bool new_voltage = false;
 bool new_temp = false;
 
-//flags
-int wire_cut = 0;
+//faults
+bool volt_sense_fault = 0;    // Configured
+bool isoSPI_fault = 0;        // Configured
+bool curr_sense_fault = 0;    // Configured
+bool overvolt_fault = 0;      // Configured
+bool undervolt_fault = 0;     // Configured
+bool overtemp_fault = 0;      // Configured
+bool undertemp_fault = 0;     // Configured
+bool fusible_link_fault = 0;  // Configured
+
 bool memory_fault = 0;
-bool comms_fault = 0;
-bool curr_sense_fault = 0;
-bool watchdog_callback = 0;
-bool watchdog_reset = 0;
-bool charger_fault = 0;
+String serialBuffer = "";     //Serial buffer used for clearing faults
+
+//fault positions (cell number / temp number)
+uint8_t pos_volt_sense_fault = 0;   // Configured
+uint8_t pos_overvolt = 0;   // Configured
+uint8_t pos_undervolt = 0;   // Not configured
+uint8_t pos_overtemp = 0;      // Configured
+uint8_t pos_undertemp = 0;      // Configured
+uint8_t pos_fusible_link_fault = 0; // Not Configured
+
+int wire_cut = 0;             // Not Configured
+bool watchdog_callback = 0;   // Not Configured
+bool watchdog_reset = 0;      // Not Configured
+bool charger_fault = 0;       // Not Configured
 
 bool CHG_EN = 0;  //0: enable charging, 1: disable charging
+
+// Fault Memory Map (EEPROM)
+// Byte 0:  76543210
+//          0 = volt_sense_fault
+//          1 = isoSPI_fault
+//          2 = curr_sense_fault
+//          3 = overvolt_fault
+//          4 = undervolt_fault
+//          5 = overtemp_fault
+//          6 = undertemp_fault
+//          7 = fusible_link_fault
+// Byte 1:  pos_volt_sense_fault
+// Byte 2:  pos_overvolt
+// Byte 3:  pos_undervolt
+// Byte 4:  pos_overtemp
+// Byte 5:  pos_undertemp
+// Byte 6:  pos_fusible_link_fault
+
 
 FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can;  //    https://github.com/tonton81/FlexCAN_T4/tree/master
 
@@ -177,9 +213,11 @@ void setup() {
       measure_current();
       measure_voltage();
       measure_temp();
-      TX_CAN();       //wrong baud rate every other message
-      print_min_max();
+      //TX_CAN();       //wrong baud rate every other message
+      //print_min_max();
       reset_watchdog();
+      //update_faults();
+      //print_faults();
       msg = RX_CAN();
 
       //Alternate CAN baud rate (250000 for charger, 500000 for vehicle)
@@ -195,6 +233,7 @@ void setup() {
       String input = Serial.readStringUntil('\n');
       input.trim();
       
+      /*
       if (msg.id == INV_TX_ID && false) {  //Always check msg id. Stdby has not yet been tested
         mode = "standy";
         can.setBaudRate(500000);
@@ -213,6 +252,7 @@ void setup() {
         mode = "debug";
         break;
       }
+      */
       
       delay(20);
       Serial.println("End of Setup Loop");
@@ -771,13 +811,14 @@ void read_register_group(uint16_t command, uint8_t response[num_boards][6]) {  /
 
       // Debug Print
       if(debug){
-        if((rx_pec10 != calc_pec10) || true){
-          //Serial.println("PEC mismatch!");
-          Serial.print("response PEC ");
-          Serial.println(rx_pec10, HEX);
-          Serial.print("calculated PEC ");
-          Serial.println(calc_pec10, HEX);
-        }
+        Serial.print("response PEC ");
+        Serial.println(rx_pec10, HEX);
+        Serial.print("calculated PEC ");
+        Serial.println(calc_pec10, HEX);
+      }
+
+      if(rx_pec10 != calc_pec10){
+        isoSPI_fault = 1;
       }
 
   }
@@ -936,9 +977,9 @@ void measure_temp(bool open_wire_check) {  //25 millisecond execution time
         command_idx++;
     }
 
-    for (int i = 0; i < num_boards; i++)
-        for (int j = 0; j < 10; j++)
-            cell_temp[i][j] = map_temp(cell_temp[i][j]);
+    // for (int i = 0; i < num_boards; i++)
+    //     for (int j = 0; j < 10; j++)
+    //         cell_temp[i][j] = map_temp(cell_temp[i][j]);
 
     new_temp = true;
 
@@ -1034,6 +1075,7 @@ void cell_open_wire_check() {
                 if(debug){
                     Serial.println("Open Voltage Sense Lead!");
                     print_with_args("Board: %d Cell: %d", i + 1, j + 1);
+                    pos_volt_sense_fault = i*num_cells + j;
                 }
             }
         }
@@ -1042,6 +1084,7 @@ void cell_open_wire_check() {
     if(open_wire){
         digitalWrite(20, LOW);
         delay(1000); // delay to overcome debounce of shutdown circuit
+        wire_cut = 1;
         Serial.println("Open voltage sense lead detected");
     }
 
@@ -1063,6 +1106,17 @@ bool reset_watchdog() {  //this needs to clear the voltage and temperature measu
         delay(1000);  //delay to overcome debounce of shutdown circuit
         Serial.println("invalid voltage");
         Serial.println(cell_voltage[i][j]);
+
+        if(cell_voltage[i][j] > OV){
+          overvolt_fault = 1;
+          pos_overvolt = i*num_cells + j;
+        }
+        else{
+          undervolt_fault = 1;
+          pos_undervolt = i*num_cells + j;
+        }
+
+
         return false;
       }
     }
@@ -1081,6 +1135,15 @@ bool reset_watchdog() {  //this needs to clear the voltage and temperature measu
         Serial.print(i + 1);
         Serial.print("Num: ");
         Serial.println(j + 1);
+        if(cell_temp[i][j] > max_temp){
+          overtemp_fault;
+          pos_overtemp = i*10 + j;
+        }
+        else{
+          undertemp_fault;
+          pos_undertemp = i*10 + j;
+        }
+
         return false;
       }
     }
@@ -1090,6 +1153,7 @@ bool reset_watchdog() {  //this needs to clear the voltage and temperature measu
     if (max_cell_voltage - min_cell_voltage > max_diff){
         digitalWrite(20, LOW);
         delay(1000); // delay to overcome debounce of shutdown circuit
+        fusible_link_fault = 1;
         Serial.println("Open fusible link detected - max voltage differential exceeded");
         return false;
     }
@@ -1106,7 +1170,7 @@ void measure_current() {
   digitalWrite(CS1, LOW);
 
   for (int i = 0; i < 2; i++) {
-    SPI1.transfer(0b00000000);  //clock ADC
+    SPI1.transfer(0b01100100);  //clock ADC
   }
 
   ADC = SPI1.transfer(0b00000000);
@@ -1123,9 +1187,10 @@ void measure_current() {
     current = (volt - 2.5) / .004 - current_offset;  //this needs checked
   }
 
-  // if(debug){
-  //   Serial.print("current: "); Serial.println(current);
-  // }
+  if(debug){
+    Serial.print("Hall Effect ADC Voltage: "); Serial.println(volt);
+    Serial.print("current: "); Serial.println(current);
+  }
   current_count = current_count + 1;
   digitalWrite(CS1, HIGH);
 }
@@ -1286,6 +1351,120 @@ void configure_sense() {
     std::copy(data, data + 6, data_arr[i]);
   }
   write_register_group(WRCFGA, data_arr);
+}
+
+void update_faults(){
+  // Check for "clear_faults" input
+  while (Serial.available() > 0) {
+    char c = Serial.read();
+    if (c == '\n') {
+      serialBuffer.trim();
+      if (serialBuffer == "clear_faults") {
+        Serial.println("Clearing faults");
+        volt_sense_fault = 0;
+        isoSPI_fault = 0;
+        curr_sense_fault = 0;
+        overvolt_fault = 0;
+        undervolt_fault = 0;
+        overtemp_fault = 0;
+        undertemp_fault = 0;
+        fusible_link_fault = 0;
+        pos_volt_sense_fault = 0;
+        pos_overvolt = 0;
+        pos_undervolt = 0;
+        pos_overtemp = 0;
+        pos_undertemp = 0;
+        pos_fusible_link_fault = 0;
+        for(int i = 0; i < 7; i++){
+          EEPROM.write(i, 0);
+        }
+        serialBuffer = "";
+        return;
+      }
+      //Clear buffer even if input is not "clear_faults"
+      serialBuffer = "";
+    } 
+    else {
+      serialBuffer += c;
+    }
+  }
+
+  // No clear_faults input, check / update stored faults
+  uint8_t stored_faults = EEPROM.read(0);
+  uint8_t current_faults =  
+                    (fusible_link_fault << 7) |
+                    (undertemp_fault << 6) | 
+                    (overtemp_fault << 5) | 
+                    (undervolt_fault << 4) | 
+                    (overvolt_fault << 3) |
+                    (curr_sense_fault << 2) |
+                    (isoSPI_fault << 1) |
+                    (volt_sense_fault << 0);
+
+  // Check for new faults, do not clear stored faults
+  if(stored_faults != (current_faults | stored_faults) ){
+    EEPROM.write(0, (current_faults | stored_faults) );
+  }
+
+  // Store fault positions if none exist
+  if( (EEPROM.read(1) == 0) && (pos_volt_sense_fault != 0)){
+    EEPROM.write(1, pos_volt_sense_fault);
+  }
+  if( (EEPROM.read(2) == 0) && (pos_overvolt != 0)){
+    EEPROM.write(2, pos_overvolt);
+  }
+  if( (EEPROM.read(3) == 0) && (pos_undervolt != 0)){
+    EEPROM.write(3, pos_undervolt);
+  }
+  if( (EEPROM.read(4) == 0) && (pos_overtemp != 0)){
+    EEPROM.write(4, pos_overtemp);
+  }
+  if( (EEPROM.read(5) == 0) && (pos_undertemp != 0)){
+    EEPROM.write(5, pos_undertemp);
+  }
+  if( (EEPROM.read(6) == 0) && (pos_fusible_link_fault != 0)){
+  EEPROM.write(6, pos_fusible_link_fault);
+  }
+}
+
+void print_faults(){
+  uint8_t stored_faults = EEPROM.read(0);
+  if(!stored_faults){
+    Serial.println("No Stored Faults");
+    return;
+  }
+  
+  if(stored_faults & 0b10000000){
+    Serial.print("Fusible link fault, position: ");
+    Serial.println(EEPROM.read(6));
+  }
+  if(stored_faults & 0b01000000){
+    Serial.print("Undertemp fault, position: ");
+    Serial.println(EEPROM.read(5));
+  }
+  if(stored_faults & 0b00100000){
+    Serial.print("Overtemp fault, position: ");
+    Serial.println(EEPROM.read(4));
+  }
+  if(stored_faults & 0b00010000){
+    Serial.print("Undervolt fault, position: ");
+    Serial.println(EEPROM.read(3));
+  }
+  if(stored_faults & 0b00001000){
+    Serial.print("Overvolt fault, position: ");
+    Serial.println(EEPROM.read(2));
+  }
+  if(stored_faults & 0b00000100){
+    Serial.println("Current sense fault (stored)");
+  }
+  if(stored_faults & 0b00000010){
+    Serial.println("IsoSPI fault (stored)");
+  }
+  if(stored_faults & 0b00000001){
+    Serial.print("Voltage sense fault, position ");
+    Serial.println(EEPROM.read(1));
+  }
+
 }
 
 /*
