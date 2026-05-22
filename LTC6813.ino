@@ -217,19 +217,20 @@ void setup() {
 
   //voltage poll and temperature poll take 16 and 24 milliseconds. The rest of the measure functions only take 1 or two milliseconds
 
-  /*
+  
   //Charger test loop
   while(1){
+    Serial.println("Begin charge test loop");
     measure_voltage();
     measure_temp();
     measure_current();
-    charger_enable(true);
+    charger_enable(false);
     reset_watchdog();
-    CAN_message_t msg = RX_CAN();
-    Serial.println("Loop ended");
+    RX_CAN_EV2();
+    Serial.println("End charge test loop");
     delay(1000);
   }
-  */
+  
 
 
   if (mode == "") {
@@ -1282,46 +1283,29 @@ void measure_current() {
 
 
 void charger_enable(bool enable) {
-  uint16_t chg_current;
-  if (soc < 80)
-        chg_current = CHG_current1;
-    else if (soc < 90)
-        chg_current = CHG_current2;
-    else
-        chg_current = CHG_current3; 
-
   digitalWrite(STBY, LOW);
   digitalWrite(CTX3, HIGH);
   delay(1);
+  digitalWrite(CTX3, LOW);
   CAN_message_t CHGR_EN;
-  //CHGR_EN.id = 0x1806E5F4;  // Set the CAN message ID     //datasheet
   CHGR_EN.id = 0x1806E5F4;  // Set the CAN message ID     //datasheet
-  //CHGR_EN.id = 0x18FF50E5;  //charger send can id?
-  CHGR_EN.flags.extended = 1;
-  CHGR_EN.len = 8;  // Set the data length
-  //7FF max CAN ID
+  CHGR_EN.flags.extended = 1; 
+  CHGR_EN.len = 8;     // Set the data length
 
-  uint16_t voltage_int = (uint16_t)(CHG_voltage * 10);
-  uint16_t current_int = (uint16_t)(chg_current * 10);
-
-
-  CHGR_EN.buf[0] = (uint8_t)(voltage_int >> 8);  // High byte
-  CHGR_EN.buf[1] = (uint8_t)(voltage_int);       // Low byte
-  CHGR_EN.buf[2] = (uint8_t)(current_int >> 8);  // High byte
-  CHGR_EN.buf[3] = (uint8_t)(current_int);       // Low byte
+  CHGR_EN.buf[0] = (uint8_t)(CHG_voltage*10 >> 8);
+  CHGR_EN.buf[1] = (uint8_t)(CHG_voltage*10);
+  CHGR_EN.buf[2] = (uint8_t)(CHG_current1*10 >> 8);
+  CHGR_EN.buf[3] = (uint8_t)(CHG_current1*10);
   CHGR_EN.buf[4] = (uint8_t)(enable);
   CHGR_EN.buf[5] = 0;
   CHGR_EN.buf[6] = 0;
   CHGR_EN.buf[7] = 0;
 
-  bool message_sent = can.write(CHGR_EN);
-  for (int i = 0; i < CHGR_EN.len; i++) {
-    Serial.print(CHGR_EN.buf[i], BIN);
-    Serial.print(" ");
+  if(can.write(CHGR_EN)){
+    Serial.println("CAN message sent");
   }
-  digitalWrite(CTX3, LOW);
-
-  if (!message_sent) {
+  else{
+    Serial.println("CAN message TX Failed");
   }
 }
 
@@ -1405,6 +1389,27 @@ CAN_message_t RX_CAN() {  //grabs the first message in the FIFO.
     Serial.print('\n');
   }
   return msg;  //always check the ID of the returned message. No messages in buffer returns 0 ID with 8 byte of zero data
+}
+
+void RX_CAN_EV2(){
+  digitalWrite(STBY, LOW);
+  digitalWrite(CTX3, HIGH);
+
+  CAN_message_t msg;
+  bool received = false;
+  while (received == false) {
+    can.read(msg);
+    Serial.print("ID: ");
+    Serial.print(msg.id, HEX);
+    Serial.println(" Data: ");
+    msg.len = 16;
+    for (int i = 0; i < msg.len; i++) {
+      Serial.print(msg.buf[i], BIN);
+      Serial.print(" ");
+    }
+    received = true;
+    Serial.print('\n');
+  }
 }
 
 void configure_sense() {
