@@ -224,10 +224,19 @@ void setup() {
     measure_voltage();
     measure_temp();
     measure_current();
-    charger_enable(false);
     reset_watchdog();
-    RX_CAN_EV2();
+    CAN_message_t msg;
+    float charger_voltage = 0;
+    float charger_current = 0;
+    msg = RX_CAN();
+    charger_voltage = ((uint16_t)msg.buf[0] << 8 | (uint16_t)msg.buf[1]) / 10;
+    charger_current = ((uint16_t)msg.buf[2] << 8 | (uint16_t)msg.buf[3]) / 10;
+    Serial.print("charger voltage: ");
+    Serial.println(charger_voltage);
+    Serial.print("charger current: ");
+    Serial.println(charger_current);
     Serial.println("End charge test loop");
+    charger_enable(false);
     delay(1000);
   }
   
@@ -1383,7 +1392,7 @@ CAN_message_t RX_CAN() {  //grabs the first message in the FIFO.
     Serial.println(" Data: ");
     //msg.len = 8;
     for (int i = 0; i < msg.len; i++) {
-      Serial.print(msg.buf[i], BIN);
+      Serial.print(msg.buf[i], HEX);
       Serial.print(" ");
     }
     Serial.print('\n');
