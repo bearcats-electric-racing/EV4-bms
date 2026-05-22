@@ -28,6 +28,9 @@ const int chipSelect = BUILTIN_SDCARD;
 #define CS2 38  //3nd chip select pin isoSPI
 #define CS1 0   //chip select for ADC
 
+//Charger Out
+#define CHG_OUT 35 //Charger output pin to energize relay
+
 //counters
 unsigned int start_time = millis();
 unsigned int sense_watchdog_timer;  //senseboard watchdog timer. Sense boards will go to sleep after 2 seconds if no valid command with correct PEC is sent from master.
@@ -50,7 +53,7 @@ String serialBuffer = "";     //Serial buffer used for clearing faults
 //fault positions (cell number / temp number)
 uint8_t pos_volt_sense_fault = 0;   // Configured
 uint8_t pos_overvolt = 0;   // Configured
-uint8_t pos_undervolt = 0;   // Not configured
+uint8_t pos_undervolt = 0;   // Configured
 uint8_t pos_overtemp = 0;      // Configured
 uint8_t pos_undertemp = 0;      // Configured
 uint8_t pos_fusible_link_fault = 0; // Not Configured
@@ -133,6 +136,9 @@ void setup() {
   pinMode(20, OUTPUT);
   digitalWrite(20, LOW);
 
+  //disable charger output
+  digitalWrite(CHG_OUT, HIGH);
+
   delay(5000);  //startup delay should be use to make it easier to recover the teensy when runtime errors occurs
 
   //start timers
@@ -155,7 +161,9 @@ void setup() {
   SPI1.begin();
   SPI1.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE1));
 
-  //CAN
+
+  /*
+  //EV3 CAN Setup
   pinMode(CRX3, INPUT);
   pinMode(CTX3, OUTPUT);
   pinMode(STBY, OUTPUT);
@@ -171,6 +179,15 @@ void setup() {
   can.setMBFilter(MB0, INV_TX_ID);         //Mailbox for Inverter CAN messages
   can.setMBFilter(MB1, CHG_TX_ID);         //Mailbox for Charger CAN Messages
   can.setMBFilter(MB2, 0x1806E5F4);        //Mailbox for Charger CAN Messages
+  */
+
+  //EV2 CAN
+  pinMode(CRX3, INPUT);
+  pinMode(CTX3, OUTPUT);
+  pinMode(STBY, OUTPUT);
+  can.begin();
+  can.setBaudRate(250000);
+  can.enableFIFO();
 
   //Watchdog
   if (watchdog_timeout != 0) {  //callback function is having some issues
@@ -200,6 +217,20 @@ void setup() {
 
   //voltage poll and temperature poll take 16 and 24 milliseconds. The rest of the measure functions only take 1 or two milliseconds
 
+  /*
+  //Charger test loop
+  while(1){
+    measure_voltage();
+    measure_temp();
+    measure_current();
+    charger_enable(true);
+    reset_watchdog();
+    CAN_message_t msg = RX_CAN();
+    Serial.println("Loop ended");
+    delay(1000);
+  }
+  */
+
 
   if (mode == "") {
     measure_voltage();
@@ -213,8 +244,8 @@ void setup() {
       measure_current();
       measure_voltage();
       measure_temp();
-      //TX_CAN();       //wrong baud rate every other message
-      //print_min_max();
+      TX_CAN();       //wrong baud rate every other message
+      print_min_max();
       reset_watchdog();
       //update_faults();
       //print_faults();
@@ -233,7 +264,7 @@ void setup() {
       String input = Serial.readStringUntil('\n');
       input.trim();
       
-      /*
+      
       if (msg.id == INV_TX_ID && false) {  //Always check msg id. Stdby has not yet been tested
         mode = "standy";
         can.setBaudRate(500000);
@@ -252,7 +283,7 @@ void setup() {
         mode = "debug";
         break;
       }
-      */
+    
       
       delay(20);
       Serial.println("End of Setup Loop");
@@ -276,15 +307,15 @@ void loop() {
       measure_voltage();
       measure_temp();
       reset_watchdog();
-      charger_enable(true);  //send charge-disable message and clear comm fault on charger
+      charger_enable(false);  //send charge-disable message and clear comm fault on charger
       msg = RX_CAN();
       charger_voltage = ((uint16_t)msg.buf[0] << 8 | (uint16_t)msg.buf[1]) / 10;
       charger_current = ((uint16_t)msg.buf[2] << 8 | (uint16_t)msg.buf[3]) / 10;
       Serial.println(charger_voltage);
       Serial.println(pack_voltage);
-      if (msg.id == CHG_TX_ID && msg.buf[4] == 0 || true){ //&& charger_voltage >= pack_voltage * 0.80) {  //if can id matches charger AND there are no charger faults AND precharge is complete
-        break;
-      }
+      //if (msg.id == CHG_TX_ID && msg.buf[4] == 0 || true){ //&& charger_voltage >= pack_voltage * 0.80) {  //if can id matches charger AND there are no charger faults AND precharge is complete
+      break;
+      //}
     }
     //00100 low ac power on charger flag
     delay(1000);  //delay so that another Charger CAN message is sent to the BMS (so that an empty CAN buffer is not read which would indicate a charger error)
@@ -293,7 +324,7 @@ void loop() {
     while (1) {  //charge cycle
       Serial.print("Time (minutes): "); Serial.println((float)(millis() - charge_start_time)/60000);
       Serial.print("charge fault status: ");
-      Serial.println(charger_fault);
+      Serial.println(msg.buf[4]);
       measure_voltage();
       measure_temp();
       measure_current();
@@ -314,7 +345,7 @@ void loop() {
         Serial.print("charger current: ");
         Serial.println(charger_current);
         if (msg.id == CHG_TX_ID && msg.buf[4] == 0 || true) {
-          charger_enable(false);
+          charger_enable(true);
         } else {  //charger error
           digitalWrite(20, LOW);
           charger_enable(false);
@@ -334,6 +365,7 @@ void loop() {
 
   if (mode == "standby") {  //waiting to drive. Still provides rules-compliant monitering in case CAN is lost
     Serial.println("Standby Mode Entered");
+    //digitalWrite(CHG_OUT, LOW);
 
     if (!memory_fault) {
       String filename = "data" + String(data_file_num) + ".csv";  //create data file
@@ -366,6 +398,7 @@ void loop() {
     int n = 0;  //time step number
 
     CAN_message_t msg;
+    //digitalWrite(CHG_OUT, LOW);
 
     while (1) {
       time_buffer[n] = millis() - start_time;
@@ -422,13 +455,14 @@ void loop() {
       } else {
         n = 0;
       }
-      Serial.println(n);
+      //Serial.println(n);
     }
 
   }
 
   else {                    //debug mode
     digitalWrite(20, LOW);  //open shutdown circuit in debug mode
+    //digitalWrite(CHG_OUT, LOW);
     Serial.println("Debug Mode Entered");
     while (1)
       dumpDataToSerial();
@@ -809,13 +843,13 @@ void read_register_group(uint16_t command, uint8_t response[num_boards][6]) {  /
       }
       */
 
-      // Debug Print
-      if(debug){
-        Serial.print("response PEC ");
-        Serial.println(rx_pec10, HEX);
-        Serial.print("calculated PEC ");
-        Serial.println(calc_pec10, HEX);
-      }
+      //Debug Print
+      // if(debug){
+      //   Serial.print("response PEC ");
+      //   Serial.println(rx_pec10, HEX);
+      //   Serial.print("calculated PEC ");
+      //   Serial.println(calc_pec10, HEX);
+      // }
 
       if(rx_pec10 != calc_pec10){
         isoSPI_fault = 1;
@@ -970,6 +1004,12 @@ void measure_temp(bool open_wire_check) {  //25 millisecond execution time
 
             for (int b = 0; b < num_boards; b++) {
                 int16_t adc_code = (int16_t)(((uint16_t)response[b][reading * 2 + 1] << 8) | response[b][reading * 2]);
+                // if(!thermistor_idx){
+                //   Serial.print("ADC Code: ");
+                //   Serial.println(adc_code);
+                //   Serial.print("Converted Voltage: ");
+                //   Serial.println((float)adc_code*0.00015f + 1.5f);
+                // }
                 cell_temp[b][thermistor_idx] = (float)adc_code * 0.00015f + 1.5f; // LSB represents 150 uV, +1.5v offset
             }
             thermistor_idx++;
@@ -977,14 +1017,58 @@ void measure_temp(bool open_wire_check) {  //25 millisecond execution time
         command_idx++;
     }
 
-    // for (int i = 0; i < num_boards; i++)
-    //     for (int j = 0; j < 10; j++)
-    //         cell_temp[i][j] = map_temp(cell_temp[i][j]);
+    // Map cell temps
+    for (int i = 0; i < num_boards; i++)
+        for (int j = 0; j < 10; j++)
+            cell_temp[i][j] = map_temp(cell_temp[i][j]);
+    
+    // Filer out unused thermistors
+    // Sense boards wired rear --> front --> rear (Module slot 1 --> 2 --> 3...)
+    // Bad thermistors:
+    // Module 1
+    //    board 0: GPIO5
+    //    board 1
+    // Module 2
+    //    board 2
+    //    board 3
+    // Module 3 
+    //    board 4: GPIO1
+    //    board 5 
+    // Module 4
+    //    board 6: GPIO1
+    //    board 7
+    // Module 5
+    //    board 8
+    //    board 9: GPIO2, 4, 6, 8, 10
+
+    
+    // cell_temp[0][4] = -55.0f;
+    // cell_temp[4][0] = -55.0f;
+    // cell_temp[6][0] = -55.0f;
+    // cell_temp[9][1] = -55.0f;
+    // cell_temp[9][3] = -55.0f;
+    // cell_temp[9][5] = -55.0f;
+    // cell_temp[9][7] = -55.0f;
+    // cell_temp[9][9] = -55.0f;
+
+    // Update min / max
+    min_cell_temp = 160.0f;
+    max_cell_temp = -60.0f;
+
+    for (int i = 0; i < num_boards; i++){
+      for (int j = 0; j < 10; j++){
+        if(cell_temp[i][j] == -55.0f) continue;
+        if(cell_temp[i][j] < min_cell_temp){
+          min_cell_temp = cell_temp[i][j];
+        }
+        if(cell_temp[i][j] > max_cell_temp){
+          max_cell_temp = cell_temp[i][j];
+        }
+      }
+    }
+      
 
     new_temp = true;
-
-    // Update min, max temp
-    min_max<num_boards, 10>(cell_temp, &min_cell_temp, &max_cell_temp);
 
     if (debug) {
         Serial.println("Temperatures:");
@@ -1125,7 +1209,8 @@ bool reset_watchdog() {  //this needs to clear the voltage and temperature measu
   // Check temperatures
   for (int i = 0; i < num_boards; i++) {
     for (int j = 0; j < 9; j++) {
-      if (cell_temp[i][j] > min_temp && cell_temp[i][j] < max_temp) {
+      //if (cell_temp[i][j] > min_temp && cell_temp[i][j] < max_temp) {   temporarily changed for floating GPIOs
+      if (cell_temp[i][j] < max_temp) {
         cell_temp[i][j] = min_temp;
         continue;
       } else {
@@ -1187,7 +1272,7 @@ void measure_current() {
     current = (volt - 2.5) / .004 - current_offset;  //this needs checked
   }
 
-  if(debug){
+  if(1){
     Serial.print("Hall Effect ADC Voltage: "); Serial.println(volt);
     Serial.print("current: "); Serial.println(current);
   }
@@ -1252,7 +1337,7 @@ void TX_CAN() {
   delay(1);
 
   CAN_message_t BMS_data;
-  //BMS_data.id = BMS_ID; b
+  //BMS_data.id = BMS_ID;
   //BMS_data.id = BMS_ID;
   BMS_data.id = 0x00000007;
   BMS_data.flags.extended = 0;
@@ -1260,11 +1345,11 @@ void TX_CAN() {
 
   BMS_data.buf[0] = float_2_uint8_t(soc, 0, 100);                       // SOC
   BMS_data.buf[1] = float_2_uint8_t(currentbuffer_stat, 0, 250);        // current
-  BMS_data.buf[2] = float_2_uint8_t(max_cell_voltage, 2.00, 4.50);      // max cell
+  BMS_data.buf[2] = float_2_uint8_t(max_cell_voltage, 2.00, 4.50);      // max cell voltage
   BMS_data.buf[5] = float_2_uint8_t(max_cell_temp, 0, 75);              // max cell temp
   BMS_data.buf[4] = float_2_uint8_t(min_cell_voltage, 2.00, 4.50);      // min cell voltage
   BMS_data.buf[3] = float_2_uint8_t(min_cell_temp, 0, 75);              // min cell temp
-  BMS_data.buf[6] = inst_power_limit;                                         // BMS Suggested Power Limit
+  BMS_data.buf[6] = inst_power_limit;                                   // BMS Suggested Power Limit
   BMS_data.buf[7] = float_2_uint8_t(pack_voltage, 280, 600);            // Pack voltage
 
   if (can.write(BMS_data)) {

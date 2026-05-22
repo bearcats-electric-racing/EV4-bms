@@ -17,7 +17,7 @@ const int watchdog_timeout = 0;  //watchdog timeout (in seconds). setting to 0 w
 const float open_wire_threshold = 0.30; // % voltage attenuation tolerance during open wire check - attenuation exceeding this value will flag an open wire
 
 //architecture
-const int num_boards = 1;
+const int num_boards = 10;
 const int num_cells = 14;       //cells per board
 const int num_parrallel = 1;
 
@@ -31,9 +31,9 @@ uint32_t CHG_TX_ID = 0x18FF50E5;    //CAN Message ID of messages sent from charg
 
 // Charging parameters
 const uint16_t CHG_voltage = 588;
-const uint16_t CHG_current1 = 9; // up to 80% SOC
-const uint16_t CHG_current2 = 6; // 80% to 90% SOC
-const uint16_t CHG_current3 = 4; // 90% to 100% SOC
+const uint16_t CHG_current1 = 2; // up to 80% SOC
+const uint16_t CHG_current2 = 2; // 80% to 90% SOC
+const uint16_t CHG_current3 = 2; // 90% to 100% SOC
 
 //balancing parameters
 const float balance_threshold = 3.0;       // will not balance cells below this threshold (V)

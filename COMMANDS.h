@@ -44,7 +44,7 @@ extern int wire_cut;        //indicates position of wire break . "0" indicates n
 
 #define ADCV     (0b0000001001100000)         // Start Cell Voltage ADC Conversion and Poll Status - C-ADC
 #define ADSV     (0b0000000101101000)         // Start Cell Voltage ADC Conversion and Poll Status - S-ADC
-#define ADAX     (0b0000010010010000)         // Start GPIO ADC Conversion and Poll Status
+#define ADAX     (0b0000010000010000)         // Start GPIO ADC Conversion and Poll Status
 #define OW_GPIO  (0b0000000110000000)         // GPIO Open Wire Detection Bit
 #define OW_ODD   (0b0000000000000010)         // Cell Open Wire Odd Bits
 #define OW_EVEN  (0b0000000000000001)         // Cell Open Wire Even Bits
