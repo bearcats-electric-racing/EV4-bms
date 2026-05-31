@@ -28,8 +28,9 @@ const int chipSelect = BUILTIN_SDCARD;
 #define CS2 38  //3nd chip select pin isoSPI
 #define CS1 0   //chip select for ADC
 
-//Charger Out
-#define CHG_OUT 35 //Charger output pin to energize relay
+//Charger Pins
+#define CHG_OUT 35    // Charger output pin for E-stop interlock
+#define CHG_IN 33     // Charger input pin for E-stop interlock
 
 //counters
 unsigned int start_time = millis();
@@ -136,7 +137,9 @@ void setup() {
   pinMode(20, OUTPUT);
   digitalWrite(20, LOW);
 
-  //disable charger output
+  //Configure charger interlock
+  pinMode(CHG_OUT, OUTPUT);
+  pinMode(CHG_IN, INPUT);
   digitalWrite(CHG_OUT, HIGH);
 
   delay(5000);  //startup delay should be use to make it easier to recover the teensy when runtime errors occurs
@@ -210,27 +213,9 @@ void setup() {
   measure_current();
   current_offset = current;
 
-  //Bring up references on sense boards
-  //configure_sense();
-
   check_memory();  //must be called to use SD card
 
   //voltage poll and temperature poll take 16 and 24 milliseconds. The rest of the measure functions only take 1 or two milliseconds
-
-  /*
-  //Charger test loop
-  while(1){
-    measure_voltage();
-    measure_temp();
-    measure_current();
-    charger_enable(true);
-    reset_watchdog();
-    CAN_message_t msg = RX_CAN();
-    Serial.println("Loop ended");
-    delay(1000);
-  }
-  */
-
 
   if (mode == "") {
     measure_voltage();
@@ -365,7 +350,6 @@ void loop() {
 
   if (mode == "standby") {  //waiting to drive. Still provides rules-compliant monitering in case CAN is lost
     Serial.println("Standby Mode Entered");
-    //digitalWrite(CHG_OUT, LOW);
 
     if (!memory_fault) {
       String filename = "data" + String(data_file_num) + ".csv";  //create data file
@@ -398,7 +382,6 @@ void loop() {
     int n = 0;  //time step number
 
     CAN_message_t msg;
-    //digitalWrite(CHG_OUT, LOW);
 
     while (1) {
       time_buffer[n] = millis() - start_time;
@@ -462,7 +445,6 @@ void loop() {
 
   else {                    //debug mode
     digitalWrite(20, LOW);  //open shutdown circuit in debug mode
-    //digitalWrite(CHG_OUT, LOW);
     Serial.println("Debug Mode Entered");
     while (1)
       dumpDataToSerial();
@@ -1235,13 +1217,22 @@ bool reset_watchdog() {  //this needs to clear the voltage and temperature measu
   }
 
   // Check for open fusible links
-    if (max_cell_voltage - min_cell_voltage > max_diff){
-        digitalWrite(20, LOW);
-        delay(1000); // delay to overcome debounce of shutdown circuit
-        fusible_link_fault = 1;
-        Serial.println("Open fusible link detected - max voltage differential exceeded");
-        return false;
-    }
+  if (max_cell_voltage - min_cell_voltage > max_diff){
+      digitalWrite(20, LOW);
+      delay(1000); // delay to overcome debounce of shutdown circuit
+      fusible_link_fault = 1;
+      Serial.println("Open fusible link detected - max voltage differential exceeded");
+      return false;
+  }
+
+  // Check charger interlock
+  if (mode == "charge" && digitalRead(CHG_IN)){
+    digitalWrite(20, LOW);
+    delay(1000);
+    Serial.println("Charger E-Stop Active");
+    return false;
+  }
+
 
   digitalWrite(20, HIGH);
   wdt.feed();
