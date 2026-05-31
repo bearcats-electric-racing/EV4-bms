@@ -1309,7 +1309,7 @@ void charger_enable(bool enable) {
   CHGR_EN.buf[1] = (uint8_t)(voltage_int);       // Low byte
   CHGR_EN.buf[2] = (uint8_t)(current_int >> 8);  // High byte
   CHGR_EN.buf[3] = (uint8_t)(current_int);       // Low byte
-  CHGR_EN.buf[4] = (uint8_t)(enable);
+  CHGR_EN.buf[4] = (uint8_t)(!enable);
   CHGR_EN.buf[5] = 0;
   CHGR_EN.buf[6] = 0;
   CHGR_EN.buf[7] = 0;
@@ -1399,7 +1399,7 @@ CAN_message_t RX_CAN() {  //grabs the first message in the FIFO.
     Serial.println(" Data: ");
     //msg.len = 8;
     for (int i = 0; i < msg.len; i++) {
-      Serial.print(msg.buf[i], BIN);
+      Serial.print(msg.buf[i], HEX);
       Serial.print(" ");
     }
     Serial.print('\n');
