@@ -229,6 +229,7 @@ void setup() {
       measure_current();
       measure_voltage();
       measure_temp();
+      update_SOC();
       TX_CAN();       //wrong baud rate every other message
       print_min_max();
       reset_watchdog();
