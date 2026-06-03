@@ -293,7 +293,7 @@ void loop() {
       measure_voltage();
       measure_temp();
       reset_watchdog();
-      charger_enable(false);  //send charge-disable message and clear comm fault on charger
+      charger_enable(true);  //send charge-disable message and clear comm fault on charger
       msg = RX_CAN();
       charger_voltage = ((uint16_t)msg.buf[0] << 8 | (uint16_t)msg.buf[1]) / 10;
       charger_current = ((uint16_t)msg.buf[2] << 8 | (uint16_t)msg.buf[3]) / 10;
@@ -331,10 +331,10 @@ void loop() {
         Serial.print("charger current: ");
         Serial.println(charger_current);
         if (msg.id == CHG_TX_ID && msg.buf[4] == 0 || true) {
-          charger_enable(true);
+          charger_enable(false);
         } else {  //charger error
           digitalWrite(20, LOW);
-          charger_enable(false);
+          charger_enable(true);
           Serial.println("Charger Error");
           charger_fault = 1;
         }
@@ -1301,7 +1301,7 @@ void charger_enable(bool enable) {
   CHGR_EN.buf[1] = (uint8_t)(voltage_int);       // Low byte
   CHGR_EN.buf[2] = (uint8_t)(current_int >> 8);  // High byte
   CHGR_EN.buf[3] = (uint8_t)(current_int);       // Low byte
-  CHGR_EN.buf[4] = (uint8_t)(!enable);
+  CHGR_EN.buf[4] = (uint8_t)(enable);
   CHGR_EN.buf[5] = 0;
   CHGR_EN.buf[6] = 0;
   CHGR_EN.buf[7] = 0;
