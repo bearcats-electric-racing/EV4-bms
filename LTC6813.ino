@@ -1306,14 +1306,20 @@ void charger_enable(bool enable) {
   CHGR_EN.buf[6] = 0;
   CHGR_EN.buf[7] = 0;
 
-  bool message_sent = can.write(CHGR_EN);
-  for (int i = 0; i < CHGR_EN.len; i++) {
-    Serial.print(CHGR_EN.buf[i], BIN);
-    Serial.print(" ");
-  }
-  digitalWrite(CTX3, LOW);
+  // bool message_sent = can.write(CHGR_EN);
+  // for (int i = 0; i < CHGR_EN.len; i++) {
+  //   Serial.print(CHGR_EN.buf[i], BIN);
+  //   Serial.print(" ");
+  // }
+  // digitalWrite(CTX3, LOW);
 
-  if (!message_sent) {
+  // if (!message_sent) {
+  // }
+  if(can.write(CHGR_EN)){
+    Serial.println("CAN message sent");
+  }
+  else{
+    Serial.println("CAN message TX Failed");
   }
 }
 
