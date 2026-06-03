@@ -217,6 +217,7 @@ void setup() {
 
   //voltage poll and temperature poll take 16 and 24 milliseconds. The rest of the measure functions only take 1 or two milliseconds
 
+
   if (mode == "") {
     measure_voltage();
     measure_current();
@@ -1296,11 +1297,11 @@ void charger_enable(bool enable) {
   uint16_t current_int = (uint16_t)(chg_current * 10);
 
 
-  CHGR_EN.buf[0] = (uint8_t)(voltage_int >> 8);  // High byte
-  CHGR_EN.buf[1] = (uint8_t)(voltage_int);       // Low byte
-  CHGR_EN.buf[2] = (uint8_t)(current_int >> 8);  // High byte
-  CHGR_EN.buf[3] = (uint8_t)(current_int);       // Low byte
-  CHGR_EN.buf[4] = (uint8_t)(!enable);
+  CHGR_EN.buf[0] = (uint8_t)(CHG_voltage*10 >> 8);
+  CHGR_EN.buf[1] = (uint8_t)(CHG_voltage*10);
+  CHGR_EN.buf[2] = (uint8_t)(CHG_current1*10 >> 8);
+  CHGR_EN.buf[3] = (uint8_t)(CHG_current1*10);
+  CHGR_EN.buf[4] = (uint8_t)(enable);
   CHGR_EN.buf[5] = 0;
   CHGR_EN.buf[6] = 0;
   CHGR_EN.buf[7] = 0;
