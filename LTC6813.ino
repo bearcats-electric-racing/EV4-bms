@@ -30,7 +30,7 @@ const int chipSelect = BUILTIN_SDCARD;
 
 //Charger Pins
 #define CHG_OUT 35    // Charger output pin for E-stop interlock
-#define CHG_IN 33     // Charger input pin for E-stop interlock
+#define CHG_IN 34     // Charger input pin for E-stop interlock
 
 //counters
 unsigned int start_time = millis();
@@ -137,10 +137,11 @@ void setup() {
   pinMode(20, OUTPUT);
   digitalWrite(20, LOW);
 
+
   //Configure charger interlock
-  pinMode(CHG_OUT, OUTPUT);
-  pinMode(CHG_IN, INPUT);
-  digitalWrite(CHG_OUT, HIGH);
+  // pinMode(CHG_OUT, OUTPUT);
+  // pinMode(CHG_IN, INPUT);
+  // digitalWrite(CHG_OUT, HIGH);
 
   delay(5000);  //startup delay should be use to make it easier to recover the teensy when runtime errors occurs
 
@@ -1227,12 +1228,12 @@ bool reset_watchdog() {  //this needs to clear the voltage and temperature measu
   }
 
   // Check charger interlock
-  if (mode == "charge" && digitalRead(CHG_IN)){
-    digitalWrite(20, LOW);
-    delay(1000);
-    Serial.println("Charger E-Stop Active");
-    return false;
-  }
+  // if (mode == "charge" && digitalRead(CHG_IN)){
+  //   digitalWrite(20, LOW);
+  //   delay(1000);
+  //   Serial.println("Charger E-Stop Active");
+  //   return false;
+  // }
 
 
   digitalWrite(20, HIGH);
