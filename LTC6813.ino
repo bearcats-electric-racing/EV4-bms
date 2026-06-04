@@ -315,6 +315,7 @@ void loop() {
       measure_voltage();
       measure_temp();
       measure_current();
+      update_SOC();
       Serial.print("current: ");
       Serial.println(current);
       Serial.print("Pack Voltage: ");
@@ -747,7 +748,7 @@ void SD_data_write() {
         dataFile.print(current);
         dataFile.print("\n");
       }
-      dataFile.print("Time:\n");
+      dataFile.print("\nTime:");
 
       //time stamp
       if (mode == "drive")
@@ -1229,9 +1230,10 @@ bool reset_watchdog() {  //this needs to clear the voltage and temperature measu
 
   //Check charger interlock
   if ((mode == "charge" || true) && digitalRead(CHG_IN)){
+    charger_enable(true);
     digitalWrite(20, LOW);
     delay(1000);
-    Serial.println("Charger E-Stop Active");
+    Serial.println("\nCharger E-Stop Active");
     return false;
   }
 
@@ -1308,13 +1310,18 @@ void charger_enable(bool enable) {
   CHGR_EN.buf[7] = 0;
 
   bool message_sent = can.write(CHGR_EN);
+  Serial.print("Charger CAN Message: ");
   for (int i = 0; i < CHGR_EN.len; i++) {
-    Serial.print(CHGR_EN.buf[i], BIN);
+    Serial.print(CHGR_EN.buf[i], HEX);
     Serial.print(" ");
   }
   digitalWrite(CTX3, LOW);
 
   if (!message_sent) {
+    Serial.println("\nFailed to send charger CAN message");
+  }
+  else{
+    Serial.println("\nCharger CAN message sent");
   }
 }
 
