@@ -139,9 +139,9 @@ void setup() {
 
 
   //Configure charger interlock
-  // pinMode(CHG_OUT, OUTPUT);
-  // pinMode(CHG_IN, INPUT);
-  // digitalWrite(CHG_OUT, HIGH);
+  pinMode(CHG_OUT, OUTPUT);
+  pinMode(CHG_IN, INPUT);
+  digitalWrite(CHG_OUT, HIGH);
 
   delay(5000);  //startup delay should be use to make it easier to recover the teensy when runtime errors occurs
 
@@ -1227,13 +1227,13 @@ bool reset_watchdog() {  //this needs to clear the voltage and temperature measu
       return false;
   }
 
-  // Check charger interlock
-  // if (mode == "charge" && digitalRead(CHG_IN)){
-  //   digitalWrite(20, LOW);
-  //   delay(1000);
-  //   Serial.println("Charger E-Stop Active");
-  //   return false;
-  // }
+  //Check charger interlock
+  if ((mode == "charge" || true) && digitalRead(CHG_IN)){
+    digitalWrite(20, LOW);
+    delay(1000);
+    Serial.println("Charger E-Stop Active");
+    return false;
+  }
 
 
   digitalWrite(20, HIGH);
