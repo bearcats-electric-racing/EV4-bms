@@ -31,7 +31,7 @@ uint32_t CHG_TX_ID = 0x18FF50E5;    //CAN Message ID of messages sent from charg
 
 // Charging parameters
 const uint16_t CHG_voltage = 588;
-const uint16_t CHG_current1 = 2; // up to 80% SOC
+const uint16_t CHG_current1 = 1; // up to 80% SOC
 const uint16_t CHG_current2 = 2; // 80% to 90% SOC
 const uint16_t CHG_current3 = 2; // 90% to 100% SOC
 

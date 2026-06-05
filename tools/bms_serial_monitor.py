@@ -91,29 +91,22 @@ KEY_ALIASES = {
     "charger voltage": ("charger_voltage_v", "V"),
     "charger current": ("charger_current_a", "A"),
     "max cell voltage": ("max_cell_voltage_v", "V"),
-    "max_cell_voltage": ("max_cell_voltage_v", "V"),
-    "max cell_voltage": ("max_cell_voltage_v", "V"),
     "min cell voltage": ("min_cell_voltage_v", "V"),
-    "min_cell_voltage": ("min_cell_voltage_v", "V"),
     "min cell_voltage": ("min_cell_voltage_v", "V"),
 
-    # Temperature labels seen across the BMS code/log output.
-    # These all map to the dashboard's Max_temp / Min_temp fields.
+    # Temperature labels seen in the BMS serial output.
+    # These aliases let the dashboard accept either underscore or space forms.
     "max_temp": ("max_cell_temp_c", "C"),
     "max temp": ("max_cell_temp_c", "C"),
     "max cell temp": ("max_cell_temp_c", "C"),
-    "max_cell_temp": ("max_cell_temp_c", "C"),
     "max cell_temp": ("max_cell_temp_c", "C"),
     "min_temp": ("min_cell_temp_c", "C"),
     "min temp": ("min_cell_temp_c", "C"),
     "min cell temp": ("min_cell_temp_c", "C"),
-    "min_cell_temp": ("min_cell_temp_c", "C"),
     "min cell_temp": ("min_cell_temp_c", "C"),
 
     "max die temp": ("max_die_temp_c", "C"),
-    "max_die_temp": ("max_die_temp_c", "C"),
     "min die temp": ("min_die_temp_c", "C"),
-    "min_die_temp": ("min_die_temp_c", "C"),
     "soc": ("soc_percent", "%"),
     "power limit": ("power_limit_kw", "kW"),
     "memory usage": ("sd_memory_usage_percent", "%"),
@@ -146,10 +139,14 @@ FAULT_KEYWORDS = [
     "failed",
 ]
 
+# Fixed dashboard sizing. These keep the screen from jumping while still
+# showing enough room for active problems and recent value changes.
+ACTIVE_ALERT_LINES = 6
+RECENT_EVENT_LINES = 12
+DASHBOARD_NAN = "NaN"
 
-# These lines are still parsed, counted, decoded, and written to the CSV log,
-# but they should not consume the fixed RECENT EVENTS slots on the dashboard.
-# The dashboard already has dedicated CAN / SERIAL and CHARGER sections.
+# These parsed line types are still logged to CSV and shown in the CHARGER / CAN
+# sections, but they should not consume RECENT EVENTS slots.
 SUPPRESS_RECENT_EVENT_TYPES = {
     "can_tx",
     "can_rx",
@@ -201,8 +198,10 @@ class MonitorState:
     latest_values: dict[str, tuple[Any, str]] = field(default_factory=dict)
     charger_cmd: dict[str, Any] = field(default_factory=dict)
     charger_status: dict[str, Any] = field(default_factory=dict)
-    recent_events: deque[str] = field(default_factory=lambda: deque(maxlen=20))
+    active_alerts: dict[str, str] = field(default_factory=dict)
+    recent_events: deque[str] = field(default_factory=lambda: deque(maxlen=30))
     pending_label: Optional[str] = None
+    pending_label_line: Optional[int] = None
     pending_rx_id: Optional[str] = None
 
 
@@ -266,6 +265,141 @@ def decode_charger_status(data: list[int]) -> Optional[dict[str, Any]]:
         "status": status,
         "faults": charger_status_faults(status),
     }
+
+
+def set_active_alert(state: MonitorState, key: str, text: str, active: bool = True) -> None:
+    if active:
+        state.active_alerts[key] = text
+    else:
+        state.active_alerts.pop(key, None)
+
+
+def update_charger_active_alert(state: MonitorState, status: dict[str, Any]) -> None:
+    faults = status.get("faults", [])
+    if faults:
+        set_active_alert(state, "charger_status", "Charger: " + "; ".join(faults), True)
+    else:
+        set_active_alert(state, "charger_status", "", False)
+
+
+def update_numeric_active_alert(state: MonitorState, key: str, value: Any) -> None:
+    # Keep the active alert panel for status/fault values that are currently non-zero.
+    # The normal BMS VALUES area still shows the latest measurement either way.
+    if key == "charger_fault_status_raw":
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            numeric = 0.0
+        if numeric != 0.0:
+            set_active_alert(state, key, f"Charge fault status: {value}", True)
+        else:
+            set_active_alert(state, key, "", False)
+
+
+def get_latest_float(state: MonitorState, key: str) -> Optional[float]:
+    """Return the latest numeric dashboard value for key, or None if missing."""
+    if key not in state.latest_values:
+        return None
+    value, _unit = state.latest_values[key]
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def update_derived_active_alerts(state: MonitorState) -> None:
+    """
+    Add/remove ACTIVE ALERTS based on the current dashboard state.
+
+    ACTIVE ALERTS should show current problems/conditions, not normal values
+    and not old history. RECENT EVENTS remains the short history list.
+    """
+    now = time.time()
+
+    # Charger status faults decoded from the charger status byte.
+    if state.charger_status:
+        faults = state.charger_status.get("faults", [])
+        if faults:
+            set_active_alert(state, "charger_status", "Charger: " + "; ".join(faults), True)
+        else:
+            set_active_alert(state, "charger_status", "", False)
+
+    # Charger command/status missing only matters while actually in charge mode.
+    if state.mode == "charge":
+        set_active_alert(
+            state,
+            "charger_cmd_missing",
+            "Charge mode: charger command not seen yet",
+            not bool(state.charger_cmd),
+        )
+        set_active_alert(
+            state,
+            "charger_status_missing",
+            "Charge mode: charger status not seen yet",
+            not bool(state.charger_status),
+        )
+    else:
+        set_active_alert(state, "charger_cmd_missing", "", False)
+        set_active_alert(state, "charger_status_missing", "", False)
+
+    # CAN stale checks only apply after traffic has been seen once.
+    if state.tx_count > 0 and state.last_tx_time is not None:
+        age = now - state.last_tx_time
+        set_active_alert(state, "tx_stale", f"No parsed CAN TX for {age:.1f} s", age > 2.0)
+    else:
+        set_active_alert(state, "tx_stale", "", False)
+
+    if state.rx_count > 0 and state.last_rx_time is not None:
+        age = now - state.last_rx_time
+        set_active_alert(state, "rx_stale", f"No parsed CAN RX for {age:.1f} s", age > 3.0)
+    else:
+        set_active_alert(state, "rx_stale", "", False)
+
+    # Cell voltage sanity checks.
+    max_cell_v = get_latest_float(state, "max_cell_voltage_v")
+    min_cell_v = get_latest_float(state, "min_cell_voltage_v")
+
+    set_active_alert(
+        state,
+        "cell_overvoltage",
+        f"Cell overvoltage: max cell = {max_cell_v:.3f} V" if max_cell_v is not None else "",
+        max_cell_v is not None and max_cell_v > 4.20,
+    )
+    set_active_alert(
+        state,
+        "cell_undervoltage",
+        f"Cell undervoltage: min cell = {min_cell_v:.3f} V" if min_cell_v is not None else "",
+        min_cell_v is not None and min_cell_v < 2.50,
+    )
+
+    if max_cell_v is not None and min_cell_v is not None:
+        imbalance = max_cell_v - min_cell_v
+        set_active_alert(
+            state,
+            "cell_imbalance",
+            f"Cell imbalance: {imbalance:.3f} V",
+            imbalance > 0.100,
+        )
+    else:
+        set_active_alert(state, "cell_imbalance", "", False)
+
+    # Temperature sanity checks. Adjust these thresholds if your team uses
+    # different values for charge vs drive.
+    max_temp = get_latest_float(state, "max_cell_temp_c")
+    min_temp = get_latest_float(state, "min_cell_temp_c")
+
+    set_active_alert(
+        state,
+        "cell_overtemp",
+        f"Cell over-temperature: max = {max_temp:.1f} C" if max_temp is not None else "",
+        max_temp is not None and max_temp > 60.0,
+    )
+    set_active_alert(
+        state,
+        "cell_undertemp",
+        f"Cell under-temperature: min = {min_temp:.1f} C" if min_temp is not None else "",
+        min_temp is not None and min_temp < -20.0,
+    )
 
 
 def normalize_label(label: str) -> tuple[str, str]:
@@ -339,6 +473,12 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
                 row["parsed_type"] = "event"
                 row["key"] = "event"
                 row["value"] = stripped
+            # Keep fault-like serial lines visible in ACTIVE ALERTS.
+            # CAN TX Failed gets its own key so it can be cleared by a later successful TX.
+            if "can message tx failed" in lower:
+                set_active_alert(state, "can_tx_failed", stripped, True)
+            else:
+                set_active_alert(state, "latest_fault_event", stripped, True)
             break
 
     # Full debug-sketch TX line.
@@ -347,6 +487,8 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
         can_id = clean_can_id(m.group(1))
         ext = m.group(2)
         data = parse_hex_bytes(m.group(3))
+        write_ok = m.group(4) == "1"
+        set_active_alert(state, "can_tx_failed", "CAN message TX Failed", not write_ok)
         row.update({
             "parsed_type": "can_tx",
             "can_direction": "TX",
@@ -396,6 +538,7 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
             status = decode_charger_status(data)
             if status:
                 state.charger_status = status
+                update_charger_active_alert(state, status)
                 row.update({
                     "charger_status_voltage_v": f"{status['voltage_v']:.2f}",
                     "charger_status_current_a": f"{status['current_a']:.2f}",
@@ -440,6 +583,7 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
             status = decode_charger_status(data)
             if status:
                 state.charger_status = status
+                update_charger_active_alert(state, status)
                 row.update({
                     "charger_status_voltage_v": f"{status['voltage_v']:.2f}",
                     "charger_status_current_a": f"{status['current_a']:.2f}",
@@ -487,6 +631,7 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
             "faults": charger_status_faults(status_byte),
         }
         state.charger_status = status
+        update_charger_active_alert(state, status)
         row.update({
             "parsed_type": "charger_status_decoded",
             "key": "charger_status",
@@ -508,6 +653,7 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
         except ValueError:
             value = raw_value
         state.latest_values[key] = (value, unit)
+        update_numeric_active_alert(state, key, value)
         row.update({
             "parsed_type": "value",
             "key": key,
@@ -531,11 +677,13 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
             "power_limit_kw",
         }
         state.pending_label = None
+        state.pending_label_line = None
 
     # Generic label only; next numeric-only line gets associated with this label.
     elif LABEL_ONLY_RE.match(stripped):
         label = LABEL_ONLY_RE.match(stripped).group(1)
         state.pending_label = label
+        state.pending_label_line = state.line_count
         if row["parsed_type"] == "raw":
             row.update({
                 "parsed_type": "label_pending",
@@ -543,7 +691,14 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
             })
 
     # Numeric-only line after a label-only line.
-    elif state.pending_label and NUMBER_ONLY_RE.match(stripped):
+    # A pending label is only allowed to consume the very next serial line.
+    # This prevents a later unrelated number from overwriting a value such as current.
+    elif (
+        state.pending_label
+        and state.pending_label_line is not None
+        and state.line_count == state.pending_label_line + 1
+        and NUMBER_ONLY_RE.match(stripped)
+    ):
         key, unit = normalize_label(state.pending_label)
         raw_value = NUMBER_ONLY_RE.match(stripped).group(1)
         try:
@@ -551,6 +706,7 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
         except ValueError:
             value = raw_value
         state.latest_values[key] = (value, unit)
+        update_numeric_active_alert(state, key, value)
         row.update({
             "parsed_type": "value",
             "key": key,
@@ -558,11 +714,23 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
             "unit": unit,
         })
         state.pending_label = None
+        state.pending_label_line = None
         important = True
 
+    # If a label-only line was not followed immediately by a numeric-only line,
+    # do not let it attach to some later unrelated number.
+    if (
+        state.pending_label is not None
+        and state.pending_label_line is not None
+        and state.line_count > state.pending_label_line
+        and row["parsed_type"] != "label_pending"
+    ):
+        state.pending_label = None
+        state.pending_label_line = None
+
     # Some lines should become visible in the dashboard event list.
-    # CAN traffic is still logged and decoded, but it should not push BMS values
-    # or fault messages out of the fixed-size RECENT EVENTS panel.
+    # CAN traffic is still parsed, counted, decoded, and logged to CSV,
+    # but it should not consume RECENT EVENTS slots.
     if important and row["parsed_type"] not in SUPPRESS_RECENT_EVENT_TYPES:
         state.recent_events.append(stripped)
 
@@ -610,7 +778,7 @@ def clear_screen() -> None:
 
 def value_text(state: MonitorState, key: str, width: int = 9) -> str:
     if key not in state.latest_values:
-        return "--".rjust(width)
+        return DASHBOARD_NAN.rjust(width)
     value, unit = state.latest_values[key]
     if isinstance(value, float):
         return f"{value:{width}.3f} {unit}".rstrip()
@@ -619,7 +787,7 @@ def value_text(state: MonitorState, key: str, width: int = 9) -> str:
 
 def age_text(t: Optional[float], now: Optional[float] = None) -> str:
     if t is None:
-        return "never"
+        return DASHBOARD_NAN
     if now is None:
         now = time.time()
     return f"{now - t:.2f} s ago"
@@ -636,6 +804,9 @@ def print_dashboard(state: MonitorState, log_path: Path, dashboard: str) -> None
     """
     now = time.time()
     runtime = now - state.start_time
+
+    # Refresh ACTIVE ALERTS from the latest values before rendering the dashboard.
+    update_derived_active_alerts(state)
 
     target_width = 92
     terminal_width = shutil.get_terminal_size((target_width, 30)).columns
@@ -672,7 +843,7 @@ def print_dashboard(state: MonitorState, log_path: Path, dashboard: str) -> None
     def charger_command_line() -> str:
         cmd = state.charger_cmd
         if not cmd:
-            return "Command: not seen yet"
+            return f"Command: {DASHBOARD_NAN:<16s}  Request: {DASHBOARD_NAN:>7s} V, {DASHBOARD_NAN:>6s} A, byte4={DASHBOARD_NAN}"
         return (
             f"Command: {cmd['text']:<16s}  "
             f"Request: {cmd['voltage_v']:7.1f} V, {cmd['current_a']:6.1f} A, "
@@ -682,7 +853,7 @@ def print_dashboard(state: MonitorState, log_path: Path, dashboard: str) -> None
     def charger_status_line() -> str:
         st = state.charger_status
         if not st:
-            return "Status:  not seen yet"
+            return f"Status:  Vout={DASHBOARD_NAN:>7s} V, Iout={DASHBOARD_NAN:>6s} A, status={DASHBOARD_NAN}, faults={DASHBOARD_NAN}"
         fault_text = "; ".join(st["faults"]) if st["faults"] else "none"
         return (
             f"Status:  Vout={st['voltage_v']:7.2f} V, "
@@ -692,10 +863,14 @@ def print_dashboard(state: MonitorState, log_path: Path, dashboard: str) -> None
 
     count_items = [f"{k}:{v}" for k, v in sorted(state.id_counts.items())[:6]]
     while len(count_items) < 6:
-        count_items.append("--")
+        count_items.append(DASHBOARD_NAN)
 
-    events = list(state.recent_events)[-10:]
-    while len(events) < 10:
+    alerts = [text for _key, text in sorted(state.active_alerts.items())][:ACTIVE_ALERT_LINES]
+    while len(alerts) < ACTIVE_ALERT_LINES:
+        alerts.append("")
+
+    events = list(state.recent_events)[-RECENT_EVENT_LINES:]
+    while len(events) < RECENT_EVENT_LINES:
         events.insert(0, "")
 
     emit("=" * width)
@@ -728,6 +903,12 @@ def print_dashboard(state: MonitorState, log_path: Path, dashboard: str) -> None
     emit(f"ID counts 2: {count_items[3]:<22s} {count_items[4]:<22s} {count_items[5]:<22s}")
     emit()
 
+    emit("ACTIVE ALERTS")
+    emit("-" * width)
+    for i, alert in enumerate(alerts, start=1):
+        emit(f"{i:02d}: {alert}")
+
+    emit()
     emit("RECENT EVENTS")
     emit("-" * width)
     for i, event in enumerate(events, start=1):

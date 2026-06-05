@@ -91,7 +91,9 @@ WDT_T4<WDT1> wdt;  //watchdog 1 holds output pin low until power-on-reset. This 
 // // Shared variables
 float current = 0;
 
-float current_offset = 0;
+// float current_offset = 0;
+float current_zero_voltage = 2.5;
+bool current_zero_valid = false;
 
 //state of charge
 float soc = 0.0;
@@ -210,9 +212,34 @@ void setup() {
   //Bring up ADC
   initialize_ADC();
 
-  //current offset compensation
-  measure_current();
-  current_offset = current;
+  // //current offset compensation
+  // measure_current();
+  // current_offset = current;
+  // Current sensor zero calibration.
+  // Make sure no real tractive current is flowing here.
+  delay(100);                    // let ADC/current sensor settle
+  read_current_sensor_voltage(); // throw away one startup sample, not averaged
+  delay(10);
+  bool current_cal_ok = false;
+
+  for (int attempt = 0; attempt < 3; attempt++) {
+    current_cal_ok = calibrate_current_zero();
+
+    if (current_cal_ok) {
+      break;
+    }
+
+    delay(10);
+  }
+
+  if (!current_cal_ok) {
+    digitalWrite(20, LOW); // fault
+
+    Serial.println("Current zero calibration failed after 3 attempts.");
+    Serial.println("Continuing with current marked invalid.");
+
+    current_zero_valid = false;
+  }
 
   check_memory();  //must be called to use SD card
 
@@ -305,7 +332,7 @@ void loop() {
       //}
     }
     //00100 low ac power on charger flag
-    delay(1000);  //delay so that another Charger CAN message is sent to the BMS (so that an empty CAN buffer is not read which would indicate a charger error)
+    delay(500);  //delay so that another Charger CAN message is sent to the BMS (so that an empty CAN buffer is not read which would indicate a charger error)
 
     unsigned int charge_start_time = millis();
     while (1) {  //charge cycle
@@ -1244,37 +1271,156 @@ bool reset_watchdog() {  //this needs to clear the voltage and temperature measu
   return true;
 }
 
-void measure_current() {
-  uint16_t ADC;
-  float volt;
-  digitalWrite(CS1, LOW);
+float adc_to_voltage(uint16_t ADC) {
+  return ((float)ADC / 65535.0f) * 5.0f;
+}
 
+
+uint16_t read_current_adc_word_after_command() {
+  uint16_t ADC = 0;
+
+  // Same clock/config behavior as your original measure_current()
   for (int i = 0; i < 2; i++) {
-    SPI1.transfer(0b01100100);  //clock ADC
+    SPI1.transfer(0b01100100);
   }
 
   ADC = SPI1.transfer(0b00000000);
   ADC = ADC << 8;
   ADC = ADC | SPI1.transfer(0b00000000);
-  volt = (float)(ADC) / 65535 * 5;
-  current = (volt - 2.5) / .0267 - current_offset;  //this needs checked
 
-  if (current > 50) {  //so does this
-    ADC = SPI1.transfer(0b00000000);
-    ADC = ADC << 8;
-    ADC = ADC | SPI1.transfer(0b00000000);
-    volt = (float)(ADC) / 65535 * 5;
-    current = (volt - 2.5) / .004 - current_offset;  //this needs checked
-  }
-
-  if(1){
-    Serial.print("Hall Effect ADC Voltage: "); Serial.println(volt);
-    Serial.print("current: "); Serial.println(current);
-  }
-  current_count = current_count + 1;
-  digitalWrite(CS1, HIGH);
+  return ADC;
 }
 
+
+uint16_t read_current_adc_word_no_command() {
+  uint16_t ADC = 0;
+
+  // Same behavior as your original high-current path:
+  // read another ADC word without re-sending the command.
+  ADC = SPI1.transfer(0b00000000);
+  ADC = ADC << 8;
+  ADC = ADC | SPI1.transfer(0b00000000);
+
+  return ADC;
+}
+
+
+float read_current_sensor_voltage() {
+  digitalWrite(CS1, LOW);
+
+  uint16_t ADC = read_current_adc_word_after_command();
+  float volt = adc_to_voltage(ADC);
+
+  digitalWrite(CS1, HIGH);
+
+  return volt;
+}
+
+bool calibrate_current_zero() {
+  digitalWrite(CS1, LOW);
+
+  uint16_t ADC = read_current_adc_word_after_command();
+  float volt = adc_to_voltage(ADC);
+
+  digitalWrite(CS1, HIGH);
+
+  // Sanity check. Adjust range if your sensor can legitimately idle elsewhere.
+  if (volt < 0.5f || volt > 4.5f) {
+    current_zero_valid = false;
+
+    Serial.print("Current zero calibration FAILED. ADC voltage: ");
+    Serial.println(volt, 4);
+
+    return false;
+  }
+
+  current_zero_voltage = volt;
+  current_zero_valid = true;
+  current = 0.0f;
+
+  Serial.print("Current zero voltage calibrated: ");
+  Serial.println(current_zero_voltage, 4);
+
+  return true;
+}
+
+// void measure_current() {
+//   uint16_t ADC;
+//   float volt;
+//   digitalWrite(CS1, LOW);
+
+//   for (int i = 0; i < 2; i++) {
+//     SPI1.transfer(0b01100100);  //clock ADC
+//   }
+
+//   ADC = SPI1.transfer(0b00000000);
+//   ADC = ADC << 8;
+//   ADC = ADC | SPI1.transfer(0b00000000);
+//   volt = (float)(ADC) / 65535 * 5;
+//   current = (volt - 2.5) / .0267 - current_offset;  //this needs checked
+
+//   if (current > 50) {  //so does this
+//     ADC = SPI1.transfer(0b00000000);
+//     ADC = ADC << 8;
+//     ADC = ADC | SPI1.transfer(0b00000000);
+//     volt = (float)(ADC) / 65535 * 5;
+//     current = (volt - 2.5) / .004 - current_offset;  //this needs checked
+//   }
+
+//   if(1 && current_offset != 0){
+//     Serial.print("Hall Effect ADC Voltage: "); Serial.println(volt);
+//     Serial.print("current: "); Serial.println(current);
+//   }
+//   else{
+//     Serial.print("Hall Effect ADC Voltage: "); Serial.println(volt);
+//   }
+//   current_count = current_count + 1;
+//   digitalWrite(CS1, HIGH);
+// }
+void measure_current() {
+  uint16_t ADC;
+  float volt;
+
+  digitalWrite(CS1, LOW);
+
+  ADC = read_current_adc_word_after_command();
+  volt = adc_to_voltage(ADC);
+
+  if (current_zero_valid) {
+    current = (volt - current_zero_voltage) / 0.0267f;
+
+    if (current > 50.0f) {
+      ADC = read_current_adc_word_no_command();
+      volt = adc_to_voltage(ADC);
+      current = (volt - current_zero_voltage) / 0.004f;
+    }
+
+    // Deadband only. This is not averaging.
+    if (current > -0.20f && current < 0.20f) {
+      current = 0.0f;
+    }
+
+    Serial.print("Hall Effect ADC Voltage: ");
+    Serial.println(volt, 4);
+
+    Serial.print("Current Zero Voltage: ");
+    Serial.println(current_zero_voltage, 4);
+
+    Serial.print("current: ");
+    Serial.println(current, 4);
+  } else {
+    current = 0.0f;
+
+    Serial.print("Hall Effect ADC Voltage: ");
+    Serial.println(volt, 4);
+
+    Serial.println("current: NaN");
+  }
+
+  current_count = current_count + 1;
+
+  digitalWrite(CS1, HIGH);
+}
 
 void charger_enable(bool enable) {
   uint16_t chg_current;
