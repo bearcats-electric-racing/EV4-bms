@@ -149,6 +149,8 @@ SUPPRESS_RECENT_EVENT_TYPES = {
 DASHBOARD_NAN = "NaN"
 ACTIVE_ALERT_LINES = 8
 RECENT_EVENT_LINES = 12
+EXPECTED_PACK_VOLTAGE_BOARDS = tuple(range(1, 11))
+CELLS_PER_BOARD_FOR_PACK_VOLTAGE = 14
 
 GUI_BG_NORMAL = "#0D1117"
 GUI_BG_FAULT = "#4A1010"
@@ -160,6 +162,8 @@ CELL_VOLTAGE_ORANGE_SENTINEL_HIGH = 1.55
 CELL_TEMP_MAX_FAULT_C = 60.0
 FLASH_PERIOD_S = 0.50
 SERIAL_DATA_ALIVE_TIMEOUT_S = 2.0
+CELL_VOLTAGE_ACTIVITY_FLASH_S = 0.60
+CELL_VOLTAGE_REFRESH_WINDOW_SAMPLES = 50
 
 CSV_COLUMNS = [
     "pc_timestamp_iso",
@@ -219,8 +223,8 @@ LEFT_CELL_COORDS = {
     8: (1290, 230),
     10: (1395, 390),
     12: (1665, 230),
-    14: (1810, 385),  # inferred position near Cell 13 area
-    16: (1625, 585),
+    14: (1810, 455),  # moved down to clear nearby temp circle
+    16: (1625, 625),  # moved down slightly
     18: (1445, 560),
     20: (1245, 535),
     22: (890, 615),
@@ -235,44 +239,45 @@ RIGHT_CELL_COORDS = {
     1: (1340, 260),
     3: (1165, 325),
     5: (1000, 270),
-    7: (820, 335),
+    7: (910, 395),  # moved down/right
     9: (640, 275),
     11: (400, 375),
     13: (195, 250),
-    15: (335, 590),
+    15: (250, 590),
     17: (400, 500),
-    19: (780, 650),
+    19: (780, 705),  # moved down
     21: (960, 610),
-    23: (1195, 610),
-    25: (1500, 650),
+    23: (1195, 550),  # moved up to cover Cell 23 text
+    25: (1500, 705),  # moved down
     27: (1730, 645),
 }
 
-# Odd board temps: logical U1-U10, shown on the left-side image.
+# Physical thermistor labels:
+#   odd U numbers are on the left-side image
+#   even U numbers are on the right-side image
 LEFT_TEMP_COORDS = {
     1: (840, 360),
-    2: (1210, 390),
-    3: (1575, 390),
-    4: (1780, 315),
-    5: (1785, 620),
-    6: (1670, 505),
-    7: (1290, 640),
-    8: (930, 520),
-    9: (660, 645),
-    10: (340, 615),
+    3: (1210, 390),
+    5: (1575, 390),
+    7: (1780, 315),
+    9: (1785, 620),
+    11: (1670, 505),
+    13: (1290, 640),
+    15: (930, 520),
+    17: (660, 645),
+    19: (340, 615),
 }
 
-# Even board temps: logical U11-U20, shown on the right-side image.
 RIGHT_TEMP_COORDS = {
-    11: (1450, 400),
-    12: (1035, 440),
-    13: (745, 335),
-    14: (650, 425),
-    15: (160, 500),
-    16: (400, 620),
-    17: (610, 600),
-    18: (760, 580),
-    19: (1330, 610),
+    2: (1450, 400),
+    4: (1035, 440),
+    6: (745, 335),
+    8: (650, 425),
+    10: (160, 500),
+    12: (400, 620),
+    14: (610, 600),
+    16: (760, 580),
+    18: (1330, 610),
     20: (1570, 605),
 }
 
@@ -304,6 +309,10 @@ class MonitorState:
     log_path: Optional[Path] = None
     serial_status: str = "disconnected"
     last_serial_line_time: Optional[float] = None
+    last_cell_voltage_update_time: Optional[float] = None
+    cell_voltage_refresh_intervals_ms: deque[float] = field(
+        default_factory=lambda: deque(maxlen=CELL_VOLTAGE_REFRESH_WINDOW_SAMPLES)
+    )
 
 
 START_TIME = time.time()
@@ -729,6 +738,15 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
         board = state.pending_array_board
         if state.array_section == "voltages":
             state.board_voltages[board] = values[:14]
+
+            # Used by the Status panel's cell-voltage activity indicator.
+            # The rolling refresh time is measured between received board-voltage rows.
+            if state.last_cell_voltage_update_time is not None:
+                dt_ms = (now - state.last_cell_voltage_update_time) * 1000.0
+                if 0.0 < dt_ms < 60000.0:
+                    state.cell_voltage_refresh_intervals_ms.append(dt_ms)
+
+            state.last_cell_voltage_update_time = now
             row.update({
                 "parsed_type": "board_voltages",
                 "key": "board_voltages",
@@ -870,9 +888,39 @@ def auto_select_port() -> Optional[str]:
     return None
 
 
+def calculated_pack_voltage(state: MonitorState) -> Optional[float]:
+    """
+    Calculate pack voltage from the board voltage arrays.
+
+    This is only used as a fallback when the BMS serial stream has not
+    reported Pack Voltage directly. It requires every expected board to have
+    a full cell-voltage row so the dashboard does not show a partial-pack sum.
+    """
+    total = 0.0
+
+    for board in EXPECTED_PACK_VOLTAGE_BOARDS:
+        values = state.board_voltages.get(board)
+
+        if values is None or len(values) < CELLS_PER_BOARD_FOR_PACK_VOLTAGE:
+            return None
+
+        for raw_value in values[:CELLS_PER_BOARD_FOR_PACK_VOLTAGE]:
+            try:
+                total += float(raw_value)
+            except (TypeError, ValueError):
+                return None
+
+    return total
+
+
 def value_text(state: MonitorState, key: str, decimals: int = 3) -> str:
     if key not in state.latest_values:
+        if key == "pack_voltage_v":
+            pack_voltage = calculated_pack_voltage(state)
+            if pack_voltage is not None:
+                return f"{pack_voltage:.{decimals}f} V (cal)"
         return DASHBOARD_NAN
+
     value, unit = state.latest_values[key]
     if isinstance(value, float):
         return f"{value:.{decimals}f} {unit}".strip()
@@ -1282,38 +1330,68 @@ class ModuleMap(ttk.Frame):
 
             has_orange = any(self.is_orange_voltage(item.get("value")) for item in (min_item, max_item) if item)
             has_fault = any(self.is_voltage_fault(item.get("value")) for item in (min_item, max_item) if item)
-            if has_orange:
-                fill = self.flashing_fill(fill, "#FF8C00", flash_on)
-                border = "#FFD23F"
-                text_color = "black"
-            elif has_fault:
-                fill = self.flashing_fill(fill, "#FF2B2B", flash_on)
-                border = "#FFFFFF" if flash_on else "#FF2B2B"
-                text_color = "white"
 
             x, y = self.scale_point(point)
-            badge_w = 90 if self.display_width < 900 else 108
+            # Same height, reduced width so the voltage badges better fit the text.
+            badge_w = 78 if self.display_width < 900 else 92
             badge_h = 50
+
+            # Min/Max mode uses board-pair colors as the rectangle base:
+            #   top half    = max value's board-pair color
+            #   bottom half = min value's board-pair color
+            max_base_fill = marker_pair_color(max_item.get("board") if max_item else None)
+            min_base_fill = marker_pair_color(min_item.get("board") if min_item else None)
+
+            top_fill = max_base_fill
+            bottom_fill = min_base_fill
+            top_text_color = readable_text_color(top_fill)
+            bottom_text_color = readable_text_color(bottom_fill)
+
+            if has_orange:
+                top_fill = self.flashing_fill(top_fill, "#FF8C00", flash_on)
+                bottom_fill = self.flashing_fill(bottom_fill, "#FF8C00", flash_on)
+                border = "#FFD23F"
+                top_text_color = "black"
+                bottom_text_color = "black"
+            elif has_fault:
+                top_fill = self.flashing_fill(top_fill, "#FF2B2B", flash_on)
+                bottom_fill = self.flashing_fill(bottom_fill, "#FF2B2B", flash_on)
+                border = "#FFFFFF" if flash_on else "#FF2B2B"
+                top_text_color = "white"
+                bottom_text_color = "white"
+
+            left = x - badge_w / 2
+            right = x + badge_w / 2
+            top = y - badge_h / 2
+            middle = y
+            bottom = y + badge_h / 2
+
+            c.create_rectangle(left, top, right, middle, fill=top_fill, outline="", width=0)
+            c.create_rectangle(left, middle, right, bottom, fill=bottom_fill, outline="", width=0)
             c.create_rectangle(
-                x - badge_w / 2,
-                y - badge_h / 2,
-                x + badge_w / 2,
-                y + badge_h / 2,
-                fill=fill,
+                left,
+                top,
+                right,
+                bottom,
+                fill="",
                 outline=border,
                 width=4 if (has_orange or has_fault) else 3,
             )
-            label = (
-                f"C{cell}\n"
-                f"min {item_text(min_item, 'V', 3)}\n"
-                f"max {item_text(max_item, 'V', 3)}"
+
+            c.create_text(
+                x,
+                top + badge_h * 0.25,
+                text=f"C{cell} max\n{item_text(max_item, 'V', 3)}",
+                fill=top_text_color,
+                font=("Segoe UI", 7, "bold"),
+                justify="center",
             )
             c.create_text(
                 x,
-                y,
-                text=label,
-                fill=text_color,
-                font=("Segoe UI", 6, "bold"),
+                bottom - badge_h * 0.25,
+                text=f"C{cell} min\n{item_text(min_item, 'V', 3)}",
+                fill=bottom_text_color,
+                font=("Segoe UI", 7, "bold"),
                 justify="center",
             )
 
@@ -1342,15 +1420,15 @@ class ModuleMap(ttk.Frame):
             c.create_oval(x - r, y - r, x + r, y + r, fill=fill, outline=border, width=5 if has_fault else 4)
             label = (
                 f"U{sensor}\n"
-                f"min {item_text(min_item, 'C', 1)}\n"
-                f"max {item_text(max_item, 'C', 1)}"
+                f"lo {item_text(min_item, 'C', 1)}\n"
+                f"hi {item_text(max_item, 'C', 1)}"
             )
             c.create_text(
                 x,
                 y,
                 text=label,
                 fill="white" if fill != "#333333" else "#D0D0D0",
-                font=("Segoe UI", 6, "bold"),
+                font=("Segoe UI", 7, "bold"),
                 justify="center",
             )
 
@@ -1359,7 +1437,7 @@ class ModuleMap(ttk.Frame):
         overall_tmin = allboard_ranges.get("tmin")
         overall_tmax = allboard_ranges.get("tmax")
 
-        c.create_rectangle(4, 4, 430, 30, fill="#101214", outline=board_color, width=2)
+        c.create_rectangle(4, 4, 360, 30, fill="#101214", outline=board_color, width=2)
         c.create_text(
             14,
             17,
@@ -1373,7 +1451,7 @@ class ModuleMap(ttk.Frame):
             f"Overall Vmin: {self.fmt_voltage_item(overall_vmin)}    Overall Vmax: {self.fmt_voltage_item(overall_vmax)}\n"
             f"Overall Tmin: {self.fmt_temp_item(overall_tmin)}    Overall Tmax: {self.fmt_temp_item(overall_tmax)}"
         )
-        c.create_rectangle(4, 34, 640, 78, fill="#101214", outline="#445", width=1)
+        c.create_rectangle(4, 34, 470, 78, fill="#101214", outline="#445", width=1)
         c.create_text(12, 56, anchor="w", text=summary, fill="#F2F2F2", font=("Segoe UI", 8, "bold"))
 
     def draw(
@@ -1462,7 +1540,6 @@ class ModuleMap(ttk.Frame):
                 outline=outline,
                 width=outline_width,
             )
-            c.create_text(x, y, text=label, fill=text_color, font=("Segoe UI", 7, "bold"), justify="center")
 
         # Temperature circles: green low -> red at 60 C+.
         for sensor, point in self.temp_coords.items():
@@ -1495,7 +1572,7 @@ class ModuleMap(ttk.Frame):
                 y,
                 text=label,
                 fill="white" if fill != "#333333" else "#D0D0D0",
-                font=("Segoe UI", 7, "bold"),
+                font=("Segoe UI", 8, "bold"),
                 justify="center",
             )
 
@@ -1531,7 +1608,7 @@ class BMSGuiApp:
         self.stop_event = stop_event
         self.status_queue: "queue.Queue[str]" = queue.Queue()
         self.selected_pair = tk.IntVar(value=1)
-        self.overlay_filter = tk.StringVar(value="all")
+        self.overlay_filter = tk.StringVar(value="minmax")
         self.vars: dict[str, tk.StringVar] = {}
 
         root.title("EV4 BMS Serial GUI")
@@ -1648,7 +1725,7 @@ class BMSGuiApp:
             command=self.force_redraw,
         ).pack(side="left", padx=(0, 8))
 
-        self.legend = tk.Canvas(map_panel, height=34, bg="#0D1117", highlightthickness=0)
+        self.legend = tk.Canvas(map_panel, height=54, bg="#0D1117", highlightthickness=0)
         self.legend.grid(row=1, column=0, sticky="we", pady=(4, 4))
 
         maps = ttk.Frame(map_panel)
@@ -1660,7 +1737,7 @@ class BMSGuiApp:
         # dashboard and events visible.
         self.left_map = ModuleMap(
             maps,
-            "Left Side: EVEN Cell Voltages / U1-U10",
+            "Left Side: EVEN Cell Voltages / Odd U1-U19",
             left_image,
             LEFT_CELL_COORDS,
             LEFT_TEMP_COORDS,
@@ -1671,7 +1748,7 @@ class BMSGuiApp:
 
         self.right_map = ModuleMap(
             maps,
-            "Right Side: ODD Cell Voltages / U11-U20",
+            "Right Side: ODD Cell Voltages / Even U2-U20",
             right_image,
             RIGHT_CELL_COORDS,
             RIGHT_TEMP_COORDS,
@@ -1715,6 +1792,7 @@ class BMSGuiApp:
         frame.pack(fill="x")
         fields = [
             ("Serial", "serial_status"),
+            ("Cell V", "cell_voltage_status"),
             ("Mode", "mode"),
             ("Runtime", "runtime"),
             ("Lines", "lines"),
@@ -1739,6 +1817,22 @@ class BMSGuiApp:
                 )
 
                 ttk.Label(serial_frame, textvariable=self.make_var(key), wraplength=245).pack(side="left")
+
+            elif key == "cell_voltage_status":
+                voltage_frame = ttk.Frame(frame)
+                voltage_frame.grid(row=r, column=1, sticky="w", padx=4, pady=2)
+
+                self.cell_voltage_indicator = tk.Canvas(voltage_frame, width=14, height=14, bg=GUI_BG_NORMAL, highlightthickness=0)
+                self.cell_voltage_indicator.pack(side="left", padx=(0, 5))
+                self.cell_voltage_indicator_id = self.cell_voltage_indicator.create_oval(
+                    2, 2, 12, 12,
+                    fill="#FFD23F",  # idle yellow
+                    outline="#F2F2F2",
+                    width=1,
+                )
+
+                ttk.Label(voltage_frame, textvariable=self.make_var(key), wraplength=245).pack(side="left")
+
             else:
                 ttk.Label(frame, textvariable=self.make_var(key), wraplength=270).grid(row=r, column=1, sticky="w", padx=4, pady=2)
 
@@ -1801,6 +1895,37 @@ class BMSGuiApp:
             self.serial_indicator.configure(bg=getattr(self, "current_bg", GUI_BG_NORMAL))
             self.serial_indicator.itemconfig(self.serial_indicator_id, fill=color)
 
+
+    def update_cell_voltage_indicator(
+        self,
+        last_voltage_time: Optional[float],
+        avg_refresh_ms: Optional[float],
+    ) -> None:
+        """
+        Flash green briefly when a board cell-voltage row is received.
+        Idle color is yellow.
+
+        The text shows the rolling average refresh time in milliseconds.
+        """
+        now = time.time()
+        just_received = (
+            last_voltage_time is not None
+            and (now - last_voltage_time) <= CELL_VOLTAGE_ACTIVITY_FLASH_S
+        )
+
+        color = "#2ECC71" if just_received else "#FFD23F"
+
+        if avg_refresh_ms is None:
+            text = "avg -- ms"
+        else:
+            text = f"avg {avg_refresh_ms:.1f} ms"
+
+        self.vars["cell_voltage_status"].set(text)
+
+        if hasattr(self, "cell_voltage_indicator"):
+            self.cell_voltage_indicator.configure(bg=getattr(self, "current_bg", GUI_BG_NORMAL))
+            self.cell_voltage_indicator.itemconfig(self.cell_voltage_indicator_id, fill=color)
+
     def apply_alarm_background(self, allboard_ranges: dict[str, Any]) -> None:
         # Charger faults are intentionally ignored here; this is driven only by
         # board voltage/temp arrays.
@@ -1823,6 +1948,9 @@ class BMSGuiApp:
 
         if hasattr(self, "serial_indicator"):
             self.serial_indicator.configure(bg=bg)
+
+        if hasattr(self, "cell_voltage_indicator"):
+            self.cell_voltage_indicator.configure(bg=bg)
 
     def force_redraw(self) -> None:
         self.update_gui()
@@ -1892,8 +2020,8 @@ class BMSGuiApp:
           even boards -> physical cells C15-C28
 
         Temperature mapping:
-          odd boards  -> U1-U10
-          even boards -> U11-U20
+          odd boards  -> odd physical U labels:  U1, U3, ... U19
+          even boards -> even physical U labels: U2, U4, ... U20
 
         Disconnected thermistors reported as -55 C are ignored.
 
@@ -1931,13 +2059,14 @@ class BMSGuiApp:
         has_temp_fault = False
 
         for board, values in state.board_temps.items():
-            start_sensor = 1 if board % 2 == 1 else 11
             for i, raw_value in enumerate(values[:10]):
                 if not self.is_valid_thermistor_temp(raw_value):
                     continue
 
                 value = float(raw_value)
-                sensor = start_sensor + i
+                # Odd-numbered boards map to odd physical U labels on the left image.
+                # Even-numbered boards map to even physical U labels on the right image.
+                sensor = (1 + 2 * i) if board % 2 == 1 else (2 + 2 * i)
                 item = {
                     "board": board,
                     "sensor": sensor,
@@ -1973,30 +2102,64 @@ class BMSGuiApp:
         }
 
 
-    def get_board_temp_sensors(self, state: MonitorState, board: int, start_sensor: int) -> dict[int, Optional[float]]:
+    def get_board_temp_sensors(self, state: MonitorState, board: int, start_sensor: int = 0) -> dict[int, Optional[float]]:
         values = state.board_temps.get(board, [])
         out: dict[int, Optional[float]] = {}
+
         for i in range(10):
-            sensor = start_sensor + i
+            # Odd-numbered boards map to odd physical U labels on the left image.
+            # Even-numbered boards map to even physical U labels on the right image.
+            sensor = (1 + 2 * i) if board % 2 == 1 else (2 + 2 * i)
+
             if i < len(values) and self.is_valid_thermistor_temp(values[i]):
                 out[sensor] = values[i]
             else:
                 out[sensor] = None
+
         return out
 
     def draw_legend(self) -> None:
         c = self.legend
         c.delete("all")
+
         x = 8
+        y1 = 13
+        y2 = 38
+
         for pair in range(1, 6):
             color = PAIR_COLORS[pair]
             b1 = pair * 2 - 1
             b2 = pair * 2
-            c.create_rectangle(x, 8, x + 18, 26, fill=color, outline="white")
-            c.create_text(x + 24, 17, anchor="w", text=f"Boards {b1}/{b2}", fill="#F2F2F2", font=("Segoe UI", 9, "bold"))
-            x += 145
-        c.create_oval(x + 6, 8, x + 24, 26, fill=temp_color(25), outline="#F2F2F2", width=2)
-        c.create_text(x + 32, 17, anchor="w", text="Temp: green low → red at 60C+   -55C ignored   Voltage: purple 2.5V → blue 4.2V   Min/Max = all boards / every location", fill="#F2F2F2", font=("Segoe UI", 9, "bold"))
+            c.create_rectangle(x, y1 - 8, x + 18, y1 + 10, fill=color, outline="#FFFFFF", width=1)
+            c.create_text(
+                x + 28,
+                y1 + 1,
+                anchor="w",
+                text=f"Boards {b1}/{b2}",
+                fill="#F2F2F2",
+                font=("Segoe UI", 9, "bold"),
+            )
+            x += 150
+
+        # Two-line legend so the voltage text does not get clipped on narrower windows.
+        legend_x = x + 10
+        c.create_oval(legend_x, y1 - 9, legend_x + 18, y1 + 9, fill=temp_color(25), outline="#F2F2F2", width=2)
+        c.create_text(
+            legend_x + 28,
+            y1,
+            anchor="w",
+            text="Temp: green low → red at 60C+    -55C ignored",
+            fill="#F2F2F2",
+            font=("Segoe UI", 9, "bold"),
+        )
+        c.create_text(
+            legend_x + 28,
+            y2,
+            anchor="w",
+            text="Voltage: purple 2.5V → blue 4.2V    Min/Max = all boards / every location",
+            fill="#F2F2F2",
+            font=("Segoe UI", 9, "bold"),
+        )
 
     def update_gui(self) -> None:
         with self.state_lock:
@@ -2063,6 +2226,14 @@ class BMSGuiApp:
             allboard_ranges = self.get_allboard_ranges(state)
             serial_status_for_indicator = state.serial_status
             last_line_time_for_indicator = state.last_serial_line_time
+            last_voltage_time_for_indicator = state.last_cell_voltage_update_time
+            if state.cell_voltage_refresh_intervals_ms:
+                avg_voltage_refresh_ms = (
+                    sum(state.cell_voltage_refresh_intervals_ms)
+                    / len(state.cell_voltage_refresh_intervals_ms)
+                )
+            else:
+                avg_voltage_refresh_ms = None
             min_v = allboard_ranges["vmin"]["value"] if allboard_ranges["vmin"] else get_latest_float(state, "min_cell_voltage_v")
             max_v = allboard_ranges["vmax"]["value"] if allboard_ranges["vmax"] else get_latest_float(state, "max_cell_voltage_v")
             min_t = allboard_ranges["tmin"]["value"] if allboard_ranges["tmin"] else get_latest_float(state, "min_cell_temp_c")
@@ -2082,13 +2253,14 @@ class BMSGuiApp:
             pair_voltages = self.get_pair_voltage_cells(state, odd_board, even_board)
             left_voltages = pair_voltages
             right_voltages = pair_voltages
-            left_temps = self.get_board_temp_sensors(state, odd_board, 1)
-            right_temps = self.get_board_temp_sensors(state, even_board, 11)
+            left_temps = self.get_board_temp_sensors(state, odd_board)
+            right_temps = self.get_board_temp_sensors(state, even_board)
             overlay_filter = self.overlay_filter.get()
 
         flash_on = (int(time.time() / FLASH_PERIOD_S) % 2) == 0
         self.apply_alarm_background(allboard_ranges)
         self.update_serial_indicator(serial_status_for_indicator, last_line_time_for_indicator)
+        self.update_cell_voltage_indicator(last_voltage_time_for_indicator, avg_voltage_refresh_ms)
 
         self.voltage_dial.draw(min_v, max_v)
         self.temp_dial.draw(min_t, max_t)
