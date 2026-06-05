@@ -341,13 +341,13 @@ void loop() {
           charger_fault = 1;
         }
       }
-      delay(1000);
+      delay(100);
     }
 
     //charger fault
     while (1) {
       Serial.println("Charger Fault");
-      delay(1000);
+      delay(100);
     }
   }
 
