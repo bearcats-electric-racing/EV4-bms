@@ -150,6 +150,17 @@ DASHBOARD_NAN = "NaN"
 ACTIVE_ALERT_LINES = 8
 RECENT_EVENT_LINES = 12
 
+GUI_BG_NORMAL = "#0D1117"
+GUI_BG_FAULT = "#4A1010"
+GUI_BG_ORANGE = "#5A3300"
+CELL_VOLTAGE_MIN_FAULT = 2.50
+CELL_VOLTAGE_MAX_FAULT = 4.20
+CELL_VOLTAGE_ORANGE_SENTINEL_LOW = 1.45
+CELL_VOLTAGE_ORANGE_SENTINEL_HIGH = 1.55
+CELL_TEMP_MAX_FAULT_C = 60.0
+FLASH_PERIOD_S = 0.50
+SERIAL_DATA_ALIVE_TIMEOUT_S = 2.0
+
 CSV_COLUMNS = [
     "pc_timestamp_iso",
     "pc_epoch_s",
@@ -292,6 +303,7 @@ class MonitorState:
     board_temps: dict[int, list[float]] = field(default_factory=dict)
     log_path: Optional[Path] = None
     serial_status: str = "disconnected"
+    last_serial_line_time: Optional[float] = None
 
 
 START_TIME = time.time()
@@ -999,6 +1011,10 @@ class SerialWorker(threading.Thread):
                             with self.state_lock:
                                 row = process_line(line, now, self.state)
                             writer.writerow(row)
+                            # Green serial indicator is based on data actually being
+                            # received and saved, not merely on the COM port opening.
+                            with self.state_lock:
+                                self.state.last_serial_line_time = now
 
                         while line_times and now - line_times[0] > 1.0:
                             line_times.popleft()
@@ -1153,6 +1169,33 @@ class ModuleMap(ttk.Frame):
         return temp
 
     @staticmethod
+    def is_orange_voltage(value: Any) -> bool:
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return False
+        return CELL_VOLTAGE_ORANGE_SENTINEL_LOW <= v <= CELL_VOLTAGE_ORANGE_SENTINEL_HIGH
+
+    @staticmethod
+    def is_voltage_fault(value: Any) -> bool:
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return False
+        if ModuleMap.is_orange_voltage(v):
+            return False
+        return v < CELL_VOLTAGE_MIN_FAULT or v > CELL_VOLTAGE_MAX_FAULT
+
+    @staticmethod
+    def is_temp_fault(value: Any) -> bool:
+        temp = ModuleMap.valid_temp_value(value)
+        return temp is not None and temp >= CELL_TEMP_MAX_FAULT_C
+
+    @staticmethod
+    def flashing_fill(base_fill: str, alert_fill: str, flash_on: bool) -> str:
+        return alert_fill if flash_on else base_fill
+
+    @staticmethod
     def minmax_pairs(values: dict[int, Optional[float]]) -> tuple[Optional[int], Optional[float], Optional[int], Optional[float]]:
         valid = [(idx, float(value)) for idx, value in values.items() if value is not None]
         if not valid:
@@ -1187,15 +1230,17 @@ class ModuleMap(ttk.Frame):
         self,
         board_color: str,
         allboard_ranges: dict[str, Any],
+        flash_on: bool,
     ) -> None:
         """
         Min/Max-only overlay.
 
-        This is intentionally NOT just four global markers.
-        It draws a min/max result for every physical cell and every physical
+        Draws a min/max result for every physical cell and every physical
         thermistor location, using all boards that have reported data.
 
         Disconnected thermistors reported as -55 C are ignored.
+        Faulty voltage/temp icons flash red.
+        1.5 V sentinel voltage icons flash orange.
         """
         c = self.canvas
         voltage_ranges = allboard_ranges.get("voltage_ranges", {})
@@ -1225,7 +1270,6 @@ class ModuleMap(ttk.Frame):
             min_item = entry.get("min")
             max_item = entry.get("max")
 
-            # Use the average of min/max for the badge fill when both exist.
             values_for_color = [
                 float(item["value"])
                 for item in (min_item, max_item)
@@ -1235,6 +1279,17 @@ class ModuleMap(ttk.Frame):
             fill = voltage_color(color_value)
             text_color = readable_text_color(fill)
             border = marker_pair_color(min_item.get("board") if min_item else (max_item.get("board") if max_item else None))
+
+            has_orange = any(self.is_orange_voltage(item.get("value")) for item in (min_item, max_item) if item)
+            has_fault = any(self.is_voltage_fault(item.get("value")) for item in (min_item, max_item) if item)
+            if has_orange:
+                fill = self.flashing_fill(fill, "#FF8C00", flash_on)
+                border = "#FFD23F"
+                text_color = "black"
+            elif has_fault:
+                fill = self.flashing_fill(fill, "#FF2B2B", flash_on)
+                border = "#FFFFFF" if flash_on else "#FF2B2B"
+                text_color = "white"
 
             x, y = self.scale_point(point)
             badge_w = 90 if self.display_width < 900 else 108
@@ -1246,7 +1301,7 @@ class ModuleMap(ttk.Frame):
                 y + badge_h / 2,
                 fill=fill,
                 outline=border,
-                width=3,
+                width=4 if (has_orange or has_fault) else 3,
             )
             label = (
                 f"C{cell}\n"
@@ -1277,9 +1332,14 @@ class ModuleMap(ttk.Frame):
             fill = temp_color(color_value)
             border = marker_pair_color(min_item.get("board") if min_item else (max_item.get("board") if max_item else None))
 
+            has_fault = any(self.is_temp_fault(item.get("value")) for item in (min_item, max_item) if item)
+            if has_fault:
+                fill = self.flashing_fill(fill, "#FF2B2B", flash_on)
+                border = "#FFFFFF" if flash_on else "#FF2B2B"
+
             x, y = self.scale_point(point)
             r = 27 if self.display_width < 900 else 31
-            c.create_oval(x - r, y - r, x + r, y + r, fill=fill, outline=border, width=4)
+            c.create_oval(x - r, y - r, x + r, y + r, fill=fill, outline=border, width=5 if has_fault else 4)
             label = (
                 f"U{sensor}\n"
                 f"min {item_text(min_item, 'C', 1)}\n"
@@ -1324,6 +1384,7 @@ class ModuleMap(ttk.Frame):
         temps_by_sensor: dict[int, Optional[float]],
         overlay_filter: str = "all",
         allboard_ranges: Optional[dict[str, Any]] = None,
+        flash_on: bool = False,
     ) -> None:
         """
         All cells/temps mode:
@@ -1339,7 +1400,7 @@ class ModuleMap(ttk.Frame):
         c.create_image(0, 0, image=self.photo, anchor="nw")
 
         if overlay_filter == "minmax" and allboard_ranges is not None:
-            self.draw_allboard_range_overlay(board_color, allboard_ranges)
+            self.draw_allboard_range_overlay(board_color, allboard_ranges, flash_on)
             return
 
         filtered_voltages = {
@@ -1379,6 +1440,17 @@ class ModuleMap(ttk.Frame):
                 outline = "#FFFFFF"
                 outline_width = 4
 
+            if self.is_orange_voltage(value):
+                fill = self.flashing_fill(fill, "#FF8C00", flash_on)
+                text_color = "black"
+                outline = "#FFD23F"
+                outline_width = 5
+            elif self.is_voltage_fault(value):
+                fill = self.flashing_fill(fill, "#FF2B2B", flash_on)
+                text_color = "white"
+                outline = "#FFFFFF" if flash_on else "#FF2B2B"
+                outline_width = 5
+
             badge_w = 56 if self.display_width < 900 else 66
             badge_h = 34
             c.create_rectangle(
@@ -1410,6 +1482,11 @@ class ModuleMap(ttk.Frame):
             if sensor == tmin_sensor and sensor == tmax_sensor:
                 outline = "#FFFFFF"
                 outline_width = 5
+
+            if self.is_temp_fault(value):
+                fill = self.flashing_fill(fill, "#FF2B2B", flash_on)
+                outline = "#FFFFFF" if flash_on else "#FF2B2B"
+                outline_width = 6
 
             c.create_oval(x - r, y - r, x + r, y + r, fill=fill, outline=outline, width=outline_width)
             label = f"U{sensor}\nNaN" if value is None else f"U{sensor}\n{value:.1f}C"
@@ -1462,18 +1539,18 @@ class BMSGuiApp:
         root.minsize(1200, 760)
         root.configure(bg="#0D1117")
 
-        style = ttk.Style()
+        self.style = ttk.Style()
         try:
-            style.theme_use("clam")
+            self.style.theme_use("clam")
         except Exception:
             pass
-        style.configure(".", font=("Segoe UI", 9))
-        style.configure("TFrame", background="#0D1117")
-        style.configure("TLabelframe", background="#0D1117", foreground="#F2F2F2")
-        style.configure("TLabelframe.Label", background="#0D1117", foreground="#F2F2F2", font=("Segoe UI", 10, "bold"))
-        style.configure("TLabel", background="#0D1117", foreground="#F2F2F2")
-        style.configure("TButton", padding=5)
-        style.configure("Pair.TButton", padding=4)
+        self.style.configure(".", font=("Segoe UI", 9))
+        self.style.configure("TFrame", background="#0D1117")
+        self.style.configure("TLabelframe", background="#0D1117", foreground="#F2F2F2")
+        self.style.configure("TLabelframe.Label", background="#0D1117", foreground="#F2F2F2", font=("Segoe UI", 10, "bold"))
+        self.style.configure("TLabel", background="#0D1117", foreground="#F2F2F2")
+        self.style.configure("TButton", padding=5)
+        self.style.configure("Pair.TButton", padding=4)
 
         self.build_ui(left_image, right_image)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -1644,9 +1721,26 @@ class BMSGuiApp:
             ("Rate", "rate"),
             ("Log", "log"),
         ]
+
         for r, (label, key) in enumerate(fields):
             ttk.Label(frame, text=label + ":", width=10).grid(row=r, column=0, sticky="w", padx=4, pady=2)
-            ttk.Label(frame, textvariable=self.make_var(key), wraplength=270).grid(row=r, column=1, sticky="w", padx=4, pady=2)
+
+            if key == "serial_status":
+                serial_frame = ttk.Frame(frame)
+                serial_frame.grid(row=r, column=1, sticky="w", padx=4, pady=2)
+
+                self.serial_indicator = tk.Canvas(serial_frame, width=14, height=14, bg=GUI_BG_NORMAL, highlightthickness=0)
+                self.serial_indicator.pack(side="left", padx=(0, 5))
+                self.serial_indicator_id = self.serial_indicator.create_oval(
+                    2, 2, 12, 12,
+                    fill="#E53935",
+                    outline="#F2F2F2",
+                    width=1,
+                )
+
+                ttk.Label(serial_frame, textvariable=self.make_var(key), wraplength=245).pack(side="left")
+            else:
+                ttk.Label(frame, textvariable=self.make_var(key), wraplength=270).grid(row=r, column=1, sticky="w", padx=4, pady=2)
 
     def build_info_panel(self, parent: tk.Widget, title: str, fields: list[tuple[str, str]]) -> None:
         frame = ttk.LabelFrame(parent, text=title)
@@ -1685,6 +1779,50 @@ class BMSGuiApp:
         for r, (label, key) in enumerate(fields):
             ttk.Label(frame, text=label + ":", width=11).grid(row=r, column=0, sticky="w", padx=4, pady=2)
             ttk.Label(frame, textvariable=self.make_var(key), wraplength=260).grid(row=r, column=1, sticky="w", padx=4, pady=2)
+
+    def update_serial_indicator(self, serial_status: str, last_line_time: Optional[float]) -> None:
+        """
+        Green means the GUI is actively receiving and saving serial lines.
+
+        Opening the COM port alone is not enough. If the port is open but no
+        serial lines have been received recently, the indicator stays red.
+        """
+        now = time.time()
+        port_open = serial_status.lower().startswith("connected")
+        data_recent = (
+            last_line_time is not None
+            and (now - last_line_time) <= SERIAL_DATA_ALIVE_TIMEOUT_S
+        )
+
+        active_stream = port_open and data_recent
+        color = "#2ECC71" if active_stream else "#E53935"
+
+        if hasattr(self, "serial_indicator"):
+            self.serial_indicator.configure(bg=getattr(self, "current_bg", GUI_BG_NORMAL))
+            self.serial_indicator.itemconfig(self.serial_indicator_id, fill=color)
+
+    def apply_alarm_background(self, allboard_ranges: dict[str, Any]) -> None:
+        # Charger faults are intentionally ignored here; this is driven only by
+        # board voltage/temp arrays.
+        if allboard_ranges.get("has_1p5v"):
+            bg = GUI_BG_ORANGE
+        elif allboard_ranges.get("has_voltage_fault") or allboard_ranges.get("has_temp_fault"):
+            bg = GUI_BG_FAULT
+        else:
+            bg = GUI_BG_NORMAL
+
+        if getattr(self, "current_bg", None) == bg:
+            return
+
+        self.current_bg = bg
+        self.root.configure(bg=bg)
+        self.style.configure("TFrame", background=bg)
+        self.style.configure("TLabelframe", background=bg, foreground="#F2F2F2")
+        self.style.configure("TLabelframe.Label", background=bg, foreground="#F2F2F2", font=("Segoe UI", 10, "bold"))
+        self.style.configure("TLabel", background=bg, foreground="#F2F2F2")
+
+        if hasattr(self, "serial_indicator"):
+            self.serial_indicator.configure(bg=bg)
 
     def force_redraw(self) -> None:
         self.update_gui()
@@ -1758,8 +1896,16 @@ class BMSGuiApp:
           even boards -> U11-U20
 
         Disconnected thermistors reported as -55 C are ignored.
+
+        Extra flags:
+          has_voltage_fault = any non-charger cell voltage <2.5 V or >4.2 V
+          has_temp_fault    = any non-charger thermistor >=60 C
+          has_1p5v          = any board cell voltage near 1.5 V
         """
         voltage_by_cell: dict[int, list[dict[str, Any]]] = {cell: [] for cell in range(1, 29)}
+        has_voltage_fault = False
+        has_1p5v = False
+
         for board, values in state.board_voltages.items():
             start_cell = 1 if board % 2 == 1 else 15
             for i, raw_value in enumerate(values[:14]):
@@ -1769,13 +1915,21 @@ class BMSGuiApp:
                     continue
 
                 cell = start_cell + i
-                voltage_by_cell.setdefault(cell, []).append({
+                item = {
                     "board": board,
                     "cell": cell,
                     "value": value,
-                })
+                }
+                voltage_by_cell.setdefault(cell, []).append(item)
+
+                if CELL_VOLTAGE_ORANGE_SENTINEL_LOW <= value <= CELL_VOLTAGE_ORANGE_SENTINEL_HIGH:
+                    has_1p5v = True
+                elif value < CELL_VOLTAGE_MIN_FAULT or value > CELL_VOLTAGE_MAX_FAULT:
+                    has_voltage_fault = True
 
         temp_by_sensor: dict[int, list[dict[str, Any]]] = {sensor: [] for sensor in range(1, 21)}
+        has_temp_fault = False
+
         for board, values in state.board_temps.items():
             start_sensor = 1 if board % 2 == 1 else 11
             for i, raw_value in enumerate(values[:10]):
@@ -1784,11 +1938,15 @@ class BMSGuiApp:
 
                 value = float(raw_value)
                 sensor = start_sensor + i
-                temp_by_sensor.setdefault(sensor, []).append({
+                item = {
                     "board": board,
                     "sensor": sensor,
                     "value": value,
-                })
+                }
+                temp_by_sensor.setdefault(sensor, []).append(item)
+
+                if value >= CELL_TEMP_MAX_FAULT_C:
+                    has_temp_fault = True
 
         voltage_ranges = {
             cell: self.range_entry(items)
@@ -1809,6 +1967,9 @@ class BMSGuiApp:
             "vmax": max(all_voltage_items, key=lambda item: item["value"]) if all_voltage_items else None,
             "tmin": min(all_temp_items, key=lambda item: item["value"]) if all_temp_items else None,
             "tmax": max(all_temp_items, key=lambda item: item["value"]) if all_temp_items else None,
+            "has_voltage_fault": has_voltage_fault,
+            "has_temp_fault": has_temp_fault,
+            "has_1p5v": has_1p5v,
         }
 
 
@@ -1900,6 +2061,8 @@ class BMSGuiApp:
             self.vars["id_counts"].set("   ".join(count_items) if count_items else "NaN")
 
             allboard_ranges = self.get_allboard_ranges(state)
+            serial_status_for_indicator = state.serial_status
+            last_line_time_for_indicator = state.last_serial_line_time
             min_v = allboard_ranges["vmin"]["value"] if allboard_ranges["vmin"] else get_latest_float(state, "min_cell_voltage_v")
             max_v = allboard_ranges["vmax"]["value"] if allboard_ranges["vmax"] else get_latest_float(state, "max_cell_voltage_v")
             min_t = allboard_ranges["tmin"]["value"] if allboard_ranges["tmin"] else get_latest_float(state, "min_cell_temp_c")
@@ -1923,11 +2086,15 @@ class BMSGuiApp:
             right_temps = self.get_board_temp_sensors(state, even_board, 11)
             overlay_filter = self.overlay_filter.get()
 
+        flash_on = (int(time.time() / FLASH_PERIOD_S) % 2) == 0
+        self.apply_alarm_background(allboard_ranges)
+        self.update_serial_indicator(serial_status_for_indicator, last_line_time_for_indicator)
+
         self.voltage_dial.draw(min_v, max_v)
         self.temp_dial.draw(min_t, max_t)
         self.draw_legend()
-        self.left_map.draw(pair_label, board_color, left_voltages, left_temps, overlay_filter, allboard_ranges)
-        self.right_map.draw(pair_label, board_color, right_voltages, right_temps, overlay_filter, allboard_ranges)
+        self.left_map.draw(pair_label, board_color, left_voltages, left_temps, overlay_filter, allboard_ranges, flash_on)
+        self.right_map.draw(pair_label, board_color, right_voltages, right_temps, overlay_filter, allboard_ranges, flash_on)
 
         self.set_text_box(self.alert_text, [f"{i:02d}: {a}" for i, a in enumerate(alerts, start=1)])
         self.set_text_box(self.event_text, [f"{i:02d}: {e}" for i, e in enumerate(events, start=1)])
@@ -1941,7 +2108,7 @@ class BMSGuiApp:
             pass
         self.update_gui()
         if not self.stop_event.is_set():
-            self.root.after(1000, self.schedule_update)
+            self.root.after(250, self.schedule_update)
 
     def on_close(self) -> None:
         self.stop_event.set()

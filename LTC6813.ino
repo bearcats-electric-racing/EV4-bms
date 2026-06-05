@@ -91,6 +91,8 @@ WDT_T4<WDT1> wdt;  //watchdog 1 holds output pin low until power-on-reset. This 
 // // Shared variables
 float current = 0;
 
+float current_offset = 0.0f;
+
 // float current_offset = 0;
 float current_zero_voltage = 2.5;
 bool current_zero_valid = false;
@@ -133,6 +135,46 @@ long current_count = 0;
 long current_sum = 0;
 int RMS_Current = 0;
 
+float raw_current_from_voltage(float volt) {
+  return (volt - 2.5f) / 0.0267f;
+}
+
+
+bool calibrate_current_offset() {
+  current_offset = 0.0f;
+
+  // Throw away startup/stale ADC conversions.
+  // This is not averaging; these samples are intentionally ignored.
+  for (int i = 0; i < 8; i++) {
+    read_current_sensor_voltage();
+    delay(2);
+  }
+
+  float volt = read_current_sensor_voltage();
+  float raw_current = raw_current_from_voltage(volt);
+
+  Serial.print("Current offset calibration voltage: ");
+  Serial.println(volt, 4);
+
+  Serial.print("Current offset raw current: ");
+  Serial.println(raw_current, 4);
+
+  // In your current setup, no real current should be flowing.
+  // If this reads huge, it is not a valid zero-current offset.
+  if (raw_current < -2.0f || raw_current > 2.0f) {
+    current_offset = 0.0f;
+
+    Serial.println("Current offset calibration rejected; using 0.0000 A offset.");
+    return false;
+  }
+
+  current_offset = raw_current;
+
+  Serial.print("Current offset calibrated: ");
+  Serial.println(current_offset, 4);
+
+  return true;
+}
 
 void setup() {
   //open shutdown circuit
@@ -212,34 +254,16 @@ void setup() {
   //Bring up ADC
   initialize_ADC();
 
-  // //current offset compensation
-  // measure_current();
-  // current_offset = current;
-  // Current sensor zero calibration.
+  // Current offset compensation.
   // Make sure no real tractive current is flowing here.
-  delay(100);                    // let ADC/current sensor settle
-  read_current_sensor_voltage(); // throw away one startup sample, not averaged
-  delay(10);
-  bool current_cal_ok = false;
+  delay(100);  // let ADC/current sensor settle
 
-  for (int attempt = 0; attempt < 3; attempt++) {
-    current_cal_ok = calibrate_current_zero();
+  calibrate_current_offset();
 
-    if (current_cal_ok) {
-      break;
-    }
+  current = 0.0f;
 
-    delay(10);
-  }
-
-  if (!current_cal_ok) {
-    digitalWrite(20, LOW); // fault
-
-    Serial.println("Current zero calibration failed after 3 attempts.");
-    Serial.println("Continuing with current marked invalid.");
-
-    current_zero_valid = false;
-  }
+  Serial.print("Current offset calibrated: ");
+  Serial.println(current_offset, 4);
 
   check_memory();  //must be called to use SD card
 
@@ -1380,42 +1404,40 @@ bool calibrate_current_zero() {
 void measure_current() {
   uint16_t ADC;
   float volt;
+  float raw_current;
 
   digitalWrite(CS1, LOW);
 
   ADC = read_current_adc_word_after_command();
   volt = adc_to_voltage(ADC);
 
-  if (current_zero_valid) {
-    current = (volt - current_zero_voltage) / 0.0267f;
+  raw_current = raw_current_from_voltage(volt);
+  current = raw_current - current_offset;
 
-    if (current > 50.0f) {
-      ADC = read_current_adc_word_no_command();
-      volt = adc_to_voltage(ADC);
-      current = (volt - current_zero_voltage) / 0.004f;
-    }
+  if (current > 50.0f) {
+    ADC = read_current_adc_word_no_command();
+    volt = adc_to_voltage(ADC);
 
-    // Deadband only. This is not averaging.
-    if (current > -0.20f && current < 0.20f) {
-      current = 0.0f;
-    }
-
-    Serial.print("Hall Effect ADC Voltage: ");
-    Serial.println(volt, 4);
-
-    Serial.print("Current Zero Voltage: ");
-    Serial.println(current_zero_voltage, 4);
-
-    Serial.print("current: ");
-    Serial.println(current, 4);
-  } else {
-    current = 0.0f;
-
-    Serial.print("Hall Effect ADC Voltage: ");
-    Serial.println(volt, 4);
-
-    Serial.println("current: NaN");
+    raw_current = (volt - 2.5f) / 0.004f;
+    current = raw_current - current_offset;
   }
+
+  // Small no-load deadband. This is not averaging.
+  if (current > -0.20f && current < 0.20f) {
+    current = 0.0f;
+  }
+
+  Serial.print("Hall Effect ADC Voltage: ");
+  Serial.println(volt, 4);
+
+  Serial.print("Raw Current: ");
+  Serial.println(raw_current, 4);
+
+  Serial.print("Current Offset: ");
+  Serial.println(current_offset, 4);
+
+  Serial.print("current: ");
+  Serial.println(current, 4);
 
   current_count = current_count + 1;
 
