@@ -1,69 +1,115 @@
-"""
-PlatformIO custom target for the BMS Python serial monitor.
-
-Adds this PlatformIO target:
-  pio run -e teensy41 -t bms_monitor
-
-In VS Code PlatformIO, it should appear under:
-  Project Tasks -> teensy41 -> Custom -> bms_monitor
-"""
-
 from __future__ import annotations
 
-Import("env")  # PlatformIO/SCons provided
-
-import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 
-def _project_option(name: str, default: str = "") -> str:
+# PlatformIO injects Import("env") when running extra_scripts.
+# Pylance does not know about it, so we ignore that one name.
+env: Any
+
+try:
+    Import("env")  # type: ignore[name-defined]
+except NameError:
+    # This only happens if you open/run this file outside PlatformIO.
+    env = None
+
+
+def require_platformio_env() -> Any:
+    if env is None:
+        raise RuntimeError(
+            "This script must be run by PlatformIO as an extra_script, "
+            "not directly with Python."
+        )
+    return env
+
+
+def get_option(name: str, default: str = "") -> str:
+    e = require_platformio_env()
+
     try:
-        value = env.GetProjectOption(name, default)
+        value = e.GetProjectOption(name, default)
+    except TypeError:
+        try:
+            value = e.GetProjectOption(name)
+        except Exception:
+            value = default
     except Exception:
         value = default
+
     if value is None:
         return default
-    return str(value)
+
+    value = str(value).strip()
+    return value if value else default
 
 
-def _run_bms_monitor(source, target, env):
-    project_dir = Path(env.subst("$PROJECT_DIR"))
+def quote_arg(arg: str) -> str:
+    if " " in arg:
+        return f'"{arg}"'
+    return arg
+
+
+def run_bms_monitor(target: Any = None, source: Any = None, env: Any = None) -> int:
+    e = require_platformio_env()
+
+    project_dir = Path(e.subst("$PROJECT_DIR"))
     monitor_script = project_dir / "tools" / "bms_serial_monitor.py"
 
     if not monitor_script.exists():
-        print(f"BMS monitor script not found: {monitor_script}")
-        print("Expected file location: tools/bms_serial_monitor.py")
+        print()
+        print("ERROR: Could not find BMS monitor script:")
+        print(f"  {monitor_script}")
+        print()
+        print("Expected location:")
+        print("  tools/bms_serial_monitor.py")
         return 1
 
-    baud = _project_option("monitor_speed", "9600")
-    monitor_port = _project_option("monitor_port", "")
-    upload_port = _project_option("upload_port", "")
-    port = monitor_port or upload_port
+    baud = get_option("custom_bms_monitor_baud", get_option("monitor_speed", "9600"))
+    refresh = get_option("custom_bms_monitor_refresh", "5.0")
+    dashboard = get_option("custom_bms_monitor_dashboard", "clear")
+    log_dir = get_option("custom_bms_monitor_log_dir", "BMS_Serial_Laptop_Recieved")
+    port = get_option("custom_bms_monitor_port", get_option("monitor_port", ""))
 
-    cmd = [sys.executable, str(monitor_script), "--baud", baud]
-    if port:
+    cmd = [
+        sys.executable,
+        str(monitor_script),
+        "--baud",
+        baud,
+        "--refresh",
+        refresh,
+        "--dashboard",
+        dashboard,
+        "--log-dir",
+        log_dir,
+    ]
+
+    if port and port.lower() != "auto":
         cmd += ["--port", port]
     else:
         cmd += ["--auto"]
 
-    # Keep the display human-scale and log everything.
-    cmd += ["--refresh", "1.0", "--dashboard", "clear"]
-
-    print("Running BMS Python serial monitor:")
-    print(" ".join(cmd))
     print()
-    print("Press Ctrl+C to stop the monitor.")
+    print("Running BMS Python serial monitor:")
+    print("  " + " ".join(quote_arg(str(x)) for x in cmd))
     print()
 
     return subprocess.call(cmd, cwd=str(project_dir))
 
 
-env.AddCustomTarget(
+e = require_platformio_env()
+
+e.AddCustomTarget(
     name="bms_monitor",
     dependencies=None,
-    actions=_run_bms_monitor,
+    actions=[
+        e.VerboseAction(
+            run_bms_monitor,
+            "Starting BMS Serial Monitor",
+        )
+    ],
     title="BMS Serial Monitor",
-    description="Run the custom BMS Python serial monitor/logger instead of flooding the normal serial monitor.",
+    description="Run the BMS timestamped CSV logger and fixed-height dashboard",
 )

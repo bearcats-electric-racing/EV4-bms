@@ -25,6 +25,7 @@ import argparse
 import csv
 import os
 import re
+import shutil
 import sys
 import time
 import threading
@@ -90,14 +91,29 @@ KEY_ALIASES = {
     "charger voltage": ("charger_voltage_v", "V"),
     "charger current": ("charger_current_a", "A"),
     "max cell voltage": ("max_cell_voltage_v", "V"),
-    "min cell_voltage": ("min_cell_voltage_v", "V"),
+    "max_cell_voltage": ("max_cell_voltage_v", "V"),
+    "max cell_voltage": ("max_cell_voltage_v", "V"),
     "min cell voltage": ("min_cell_voltage_v", "V"),
-    "max cell_temp": ("max_cell_temp_c", "C"),
+    "min_cell_voltage": ("min_cell_voltage_v", "V"),
+    "min cell_voltage": ("min_cell_voltage_v", "V"),
+
+    # Temperature labels seen across the BMS code/log output.
+    # These all map to the dashboard's Max_temp / Min_temp fields.
+    "max_temp": ("max_cell_temp_c", "C"),
+    "max temp": ("max_cell_temp_c", "C"),
     "max cell temp": ("max_cell_temp_c", "C"),
-    "min cell_temp": ("min_cell_temp_c", "C"),
+    "max_cell_temp": ("max_cell_temp_c", "C"),
+    "max cell_temp": ("max_cell_temp_c", "C"),
+    "min_temp": ("min_cell_temp_c", "C"),
+    "min temp": ("min_cell_temp_c", "C"),
     "min cell temp": ("min_cell_temp_c", "C"),
+    "min_cell_temp": ("min_cell_temp_c", "C"),
+    "min cell_temp": ("min_cell_temp_c", "C"),
+
     "max die temp": ("max_die_temp_c", "C"),
+    "max_die_temp": ("max_die_temp_c", "C"),
     "min die temp": ("min_die_temp_c", "C"),
+    "min_die_temp": ("min_die_temp_c", "C"),
     "soc": ("soc_percent", "%"),
     "power limit": ("power_limit_kw", "kW"),
     "memory usage": ("sd_memory_usage_percent", "%"),
@@ -129,6 +145,18 @@ FAULT_KEYWORDS = [
     "e-stop",
     "failed",
 ]
+
+
+# These lines are still parsed, counted, decoded, and written to the CSV log,
+# but they should not consume the fixed RECENT EVENTS slots on the dashboard.
+# The dashboard already has dedicated CAN / SERIAL and CHARGER sections.
+SUPPRESS_RECENT_EVENT_TYPES = {
+    "can_tx",
+    "can_rx",
+    "can_rx_id_pending",
+    "charger_can_command",
+    "charger_status_decoded",
+}
 
 
 CSV_COLUMNS = [
@@ -496,6 +524,9 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
             "max_cell_voltage_v",
             "min_cell_voltage_v",
             "max_cell_temp_c",
+            "min_cell_temp_c",
+            "max_die_temp_c",
+            "min_die_temp_c",
             "soc_percent",
             "power_limit_kw",
         }
@@ -530,7 +561,9 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
         important = True
 
     # Some lines should become visible in the dashboard event list.
-    if important:
+    # CAN traffic is still logged and decoded, but it should not push BMS values
+    # or fault messages out of the fixed-size RECENT EVENTS panel.
+    if important and row["parsed_type"] not in SUPPRESS_RECENT_EVENT_TYPES:
         state.recent_events.append(stripped)
 
     return row
@@ -584,68 +617,135 @@ def value_text(state: MonitorState, key: str, width: int = 9) -> str:
     return f"{str(value):>{width}} {unit}".rstrip()
 
 
-def age_text(t: Optional[float]) -> str:
+def age_text(t: Optional[float], now: Optional[float] = None) -> str:
     if t is None:
         return "never"
-    return f"{time.time() - t:.2f} s ago"
+    if now is None:
+        now = time.time()
+    return f"{now - t:.2f} s ago"
 
 
 def print_dashboard(state: MonitorState, log_path: Path, dashboard: str) -> None:
-    if dashboard == "clear":
-        clear_screen()
+    """
+    Print a fixed-height dashboard.
 
+    Important:
+      - Every refresh prints the same number of visual lines.
+      - Every printed line is clipped to the terminal width to prevent wrapping.
+      - Variable-length sections, such as ID counts and recent events, are padded.
+    """
     now = time.time()
     runtime = now - state.start_time
 
-    print("=" * 92)
-    print("BMS SERIAL LAPTOP MONITOR")
-    print("=" * 92)
-    print(f"Mode: {state.mode:<10s}  Runtime: {runtime:9.1f} s  Lines: {state.line_count:8d}  Rate: {state.raw_line_rate_hz:6.1f} lines/s")
-    print(f"Log: {log_path}")
-    print()
+    target_width = 92
+    terminal_width = shutil.get_terminal_size((target_width, 30)).columns
+    width = max(60, min(target_width, terminal_width - 1))
 
-    print("BMS VALUES")
-    print("-" * 92)
-    print(f"Pack Voltage:       {value_text(state, 'pack_voltage_v')}    Current:          {value_text(state, 'current_a')}")
-    print(f"SOC:                {value_text(state, 'soc_percent')}    Power Limit:      {value_text(state, 'power_limit_kw')}")
-    print(f"Max Cell Voltage:   {value_text(state, 'max_cell_voltage_v')}    Min Cell Voltage: {value_text(state, 'min_cell_voltage_v')}")
-    print(f"Max Cell Temp:      {value_text(state, 'max_cell_temp_c')}    Min Cell Temp:    {value_text(state, 'min_cell_temp_c')}")
-    print(f"Max Die Temp:       {value_text(state, 'max_die_temp_c')}    Min Die Temp:     {value_text(state, 'min_die_temp_c')}")
-    print()
+    def fit(text: Any = "") -> str:
+        text = str(text).replace("\t", " ")
+        if len(text) > width:
+            if width > 4:
+                text = text[: width - 3] + "..."
+            else:
+                text = text[:width]
+        return text.ljust(width)
 
-    print("CHARGER")
-    print("-" * 92)
-    cmd = state.charger_cmd
-    if cmd:
-        print(f"Command: {cmd['text']:<16s}  Request: {cmd['voltage_v']:7.1f} V, {cmd['current_a']:6.1f} A, byte4=0x{cmd['control']:02X}")
-    else:
-        print("Command: not seen yet")
+    lines: list[str] = []
 
-    st = state.charger_status
-    if st:
+    def emit(text: Any = "") -> None:
+        lines.append(fit(text))
+
+    def short_path(path: Path, max_len: int) -> str:
+        s = str(path)
+        if len(s) <= max_len:
+            return s
+        name = path.name
+        parent = path.parent.name
+        suffix = f"...\\{parent}\\{name}"
+        if len(suffix) <= max_len:
+            return suffix
+        return "..." + s[-(max_len - 3):]
+
+    def value_fixed(key: str, width_chars: int = 12) -> str:
+        return value_text(state, key, width_chars)[:width_chars].ljust(width_chars)
+
+    def charger_command_line() -> str:
+        cmd = state.charger_cmd
+        if not cmd:
+            return "Command: not seen yet"
+        return (
+            f"Command: {cmd['text']:<16s}  "
+            f"Request: {cmd['voltage_v']:7.1f} V, {cmd['current_a']:6.1f} A, "
+            f"byte4=0x{cmd['control']:02X}"
+        )
+
+    def charger_status_line() -> str:
+        st = state.charger_status
+        if not st:
+            return "Status:  not seen yet"
         fault_text = "; ".join(st["faults"]) if st["faults"] else "none"
-        print(f"Status:  Vout={st['voltage_v']:7.2f} V, Iout={st['current_a']:6.2f} A, status=0x{st['status']:02X}, faults={fault_text}")
-    else:
-        print("Status:  not seen yet")
-    print()
+        return (
+            f"Status:  Vout={st['voltage_v']:7.2f} V, "
+            f"Iout={st['current_a']:6.2f} A, "
+            f"status=0x{st['status']:02X}, faults={fault_text}"
+        )
 
-    print("CAN / SERIAL")
-    print("-" * 92)
-    print(f"TX frames parsed: {state.tx_count:<8d}  last TX: {age_text(state.last_tx_time):<12s}")
-    print(f"RX frames parsed: {state.rx_count:<8d}  last RX: {age_text(state.last_rx_time):<12s}")
-    if state.id_counts:
-        counts = ", ".join(f"{k}:{v}" for k, v in sorted(state.id_counts.items())[:8])
-        print(f"ID counts: {counts}")
-    print()
+    count_items = [f"{k}:{v}" for k, v in sorted(state.id_counts.items())[:6]]
+    while len(count_items) < 6:
+        count_items.append("--")
 
-    print("RECENT EVENTS")
-    print("-" * 92)
-    for event in list(state.recent_events)[-10:]:
-        print(event[:180])
-    print()
-    print("Ctrl+C stops. The CSV log keeps every received serial line.")
-    print("Optional serial input mode: run with --input, then type a line and press Enter.")
+    events = list(state.recent_events)[-10:]
+    while len(events) < 10:
+        events.insert(0, "")
 
+    emit("=" * width)
+    emit("BMS SERIAL LAPTOP MONITOR")
+    emit("=" * width)
+    emit(f"Mode: {state.mode:<10s}  Runtime: {runtime:9.1f} s  Lines: {state.line_count:8d}  Rate: {state.raw_line_rate_hz:6.1f} lines/s")
+    emit(f"Log: {short_path(log_path, max(10, width - 5))}")
+    emit()
+
+    emit("BMS VALUES")
+    emit("-" * width)
+    emit(f"Pack Voltage:       {value_fixed('pack_voltage_v')}    Current:          {value_fixed('current_a')}")
+    emit(f"SOC:                {value_fixed('soc_percent')}    Power Limit:      {value_fixed('power_limit_kw')}")
+    emit(f"Max Cell Voltage:   {value_fixed('max_cell_voltage_v')}    Min Cell Voltage: {value_fixed('min_cell_voltage_v')}")
+    emit(f"Max_temp:           {value_fixed('max_cell_temp_c')}    Min_temp:         {value_fixed('min_cell_temp_c')}")
+    emit(f"Max Die Temp:       {value_fixed('max_die_temp_c')}    Min Die Temp:     {value_fixed('min_die_temp_c')}")
+    emit()
+
+    emit("CHARGER")
+    emit("-" * width)
+    emit(charger_command_line())
+    emit(charger_status_line())
+    emit()
+
+    emit("CAN / SERIAL")
+    emit("-" * width)
+    emit(f"TX frames parsed: {state.tx_count:<8d}  last TX: {age_text(state.last_tx_time, now):<12s}")
+    emit(f"RX frames parsed: {state.rx_count:<8d}  last RX: {age_text(state.last_rx_time, now):<12s}")
+    emit(f"ID counts 1: {count_items[0]:<22s} {count_items[1]:<22s} {count_items[2]:<22s}")
+    emit(f"ID counts 2: {count_items[3]:<22s} {count_items[4]:<22s} {count_items[5]:<22s}")
+    emit()
+
+    emit("RECENT EVENTS")
+    emit("-" * width)
+    for i, event in enumerate(events, start=1):
+        emit(f"{i:02d}: {event}")
+
+    emit()
+    emit("Ctrl+C stops. The CSV log keeps every received serial line.")
+    emit("Optional serial input mode: run with --input, then type a line and press Enter.")
+    emit("=" * width)
+
+    # Write the entire dashboard in one terminal update.
+    # This prevents sections from appearing to update one-at-a-time.
+    output = "\n".join(lines) + "\n"
+    if dashboard == "clear":
+        # ANSI clear-screen + cursor-home works in the VS Code terminal on Windows.
+        sys.stdout.write("\033[2J\033[H")
+    sys.stdout.write(output)
+    sys.stdout.flush()
 
 def input_thread_fn(ser: serial.Serial, stop_event: threading.Event) -> None:
     while not stop_event.is_set():
