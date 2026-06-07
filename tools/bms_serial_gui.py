@@ -13,7 +13,7 @@ Install:
   python -m pip install pyserial pillow
 
 Run:
-  python bms_serial_gui.py --auto --baud 9600
+  python tools\bms_serial_gui.py --auto --baud 9600
   python bms_serial_gui.py --port COM7 --baud 9600
 """
 
@@ -2628,7 +2628,7 @@ def main() -> int:
     parser.add_argument("--list", action="store_true", help="List serial ports and exit")
     parser.add_argument("--baud", type=int, default=9600, help="Serial baud rate. Current BMS code uses Serial.begin(9600).")
     parser.add_argument("--log-dir", default="BMS_Serial_Laptop_Recieved", help="Folder for timestamped CSV logs")
-    parser.add_argument("--left-image", help="Path to Left_Side_module.png")
+    parser.add_argument("--left-image", help="Path to Left_Side_Module.png")
     parser.add_argument("--right-image", help="Path to Right_Side_Module.png")
     parser.add_argument("--raw", action="store_true", help="Also echo every raw serial line to the console")
     args = parser.parse_args()
@@ -2655,7 +2655,7 @@ def main() -> int:
         print("No serial port found yet. The GUI will stay open and retry automatically.")
 
     try:
-        left_image = resolve_image_path(args.left_image, "Left_Side_module.png")
+        left_image = resolve_image_path(args.left_image, "Left_Side_Module.png")
         right_image = resolve_image_path(args.right_image, "Right_Side_Module.png")
     except FileNotFoundError as exc:
         print(exc)
