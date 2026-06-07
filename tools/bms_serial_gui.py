@@ -1471,8 +1471,11 @@ class Dial(ttk.Frame):
         self._draw_cached()
 
     def set_canvas_size(self, width: int, height: int) -> bool:
-        width = max(140, int(width))
-        height = max(74, int(height))
+        # Allow the dials to shrink when the window is restored from fullscreen
+        # or when the left pane is made shorter.  The draw code already switches
+        # into compact mode for small heights.
+        width = max(120, int(width))
+        height = max(48, int(height))
         old_width = int(float(self.canvas.cget("width")))
         old_height = int(float(self.canvas.cget("height")))
         if abs(width - old_width) < 2 and abs(height - old_height) < 2:
@@ -1515,20 +1518,21 @@ class Dial(ttk.Frame):
             return
 
         compact = h < 130
-        title_size = 10 if compact else 12
-        tick_size = 7 if compact else 8
-        value_size = 8 if compact else 10
-        marker_text_size = 7 if compact else 8
-        arc_width = max(6, min(14, int(min(w, h) * 0.075)))
+        ultra_compact = h < 78
+        title_size = 8 if ultra_compact else 10 if compact else 12
+        tick_size = 6 if ultra_compact else 7 if compact else 8
+        value_size = 7 if ultra_compact else 8 if compact else 10
+        marker_text_size = 6 if ultra_compact else 7 if compact else 8
+        arc_width = max(5, min(14, int(min(w, h) * 0.075)))
         marker_line_width = max(2, int(arc_width * 0.35))
 
         cx = w / 2
-        cy = h * (0.80 if compact else 0.78)
-        top_pad = 20 if compact else 26
-        bottom_pad = 18 if compact else 28
-        r = max(22.0, min(w * 0.38, (cy - top_pad), (h - bottom_pad) * 0.62))
+        cy = h * (0.84 if ultra_compact else 0.80 if compact else 0.78)
+        top_pad = 14 if ultra_compact else 20 if compact else 26
+        bottom_pad = 12 if ultra_compact else 18 if compact else 28
+        r = max(18.0, min(w * 0.38, (cy - top_pad), (h - bottom_pad) * 0.62))
 
-        c.create_text(cx, 12 if compact else 18, text=self.title, fill="#F2F2F2", font=("Segoe UI", title_size, "bold"))
+        c.create_text(cx, 9 if ultra_compact else 12 if compact else 18, text=self.title, fill="#F2F2F2", font=("Segoe UI", title_size, "bold"))
 
         bbox = (cx - r, cy - r, cx + r, cy + r)
         c.create_arc(bbox, start=-30, extent=240, style="arc", width=arc_width, outline="#30363D")
@@ -1705,7 +1709,7 @@ class ModuleMap(ttk.Frame):
         outline: str,
         outline_width: int,
     ) -> None:
-        """Draw a temperature marker with a shaded/gradient background."""
+        """Draw a circular marker with a shaded fill and a separate outline color."""
         if fill == "#333333":
             canvas.create_oval(
                 x - radius,
@@ -1719,8 +1723,8 @@ class ModuleMap(ttk.Frame):
             return
 
         # Tk canvas does not have native gradient fills, so draw concentric
-        # ovals from a darker edge toward a brighter center.  The base fill
-        # is already the RGB green->yellow->red temperature value.
+        # ovals from a darker edge toward a brighter center.  The outline is
+        # allowed to be a different color from the fill.
         edge_fill = blend_hex(fill, "#050505", 0.28)
         center_fill = blend_hex(fill, "#FFFFFF", 0.10)
         steps = 12
@@ -1912,8 +1916,14 @@ class ModuleMap(ttk.Frame):
                 if item is not None and item.get("value") is not None
             ]
             color_value = sum(values_for_color) / len(values_for_color) if values_for_color else None
-            fill = temp_color(color_value)
-            border = marker_pair_color(min_item.get("board") if min_item else (max_item.get("board") if max_item else None))
+
+            # Fill uses the board-pair color; outline carries the temperature
+            # gradient.  For all-board min/max, use the hottest board as the
+            # fill owner because it is the most safety-relevant board at this
+            # thermistor location.
+            fill_owner = max_item.get("board") if max_item else (min_item.get("board") if min_item else None)
+            fill = marker_pair_color(fill_owner)
+            border = temp_color(color_value)
 
             has_fault = any(self.is_temp_fault(item.get("value")) for item in (min_item, max_item) if item)
             if has_fault:
@@ -1999,7 +2009,7 @@ class ModuleMap(ttk.Frame):
         vmin_cell, vmin_val, vmax_cell, vmax_val = self.minmax_pairs(filtered_voltages)
         tmin_sensor, tmin_val, tmax_sensor, tmax_val = self.minmax_pairs(cleaned_temps)
 
-        # Voltage badges: purple at 2.5 V -> blue at 4.2 V.
+        # Voltage badges: board-pair fill; purple->blue voltage-gradient border.
         for cell, point in self.cell_coords.items():
             if not self.voltage_allowed(cell):
                 continue
@@ -2008,19 +2018,21 @@ class ModuleMap(ttk.Frame):
             x, y = self.scale_point(point)
             label = f"C{cell}\nNaN" if value is None else f"C{cell}\n{value:.3f}V"
 
-            fill = voltage_color(value)
+            # Fill uses the selected board-pair color.  The border carries
+            # the voltage gradient so voltage is shown without overwriting the
+            # board identity color.
+            fill = board_color
             text_color = readable_text_color(fill)
             outline = voltage_color(value)
             outline_width = 3
 
+            # Selected min/max are shown by a thicker border, but the border
+            # remains the voltage-gradient color.
             if cell == vmin_cell:
-                outline = "#FF5C5C"
                 outline_width = 4
             if cell == vmax_cell:
-                outline = "#58A6FF"
                 outline_width = 4
             if cell == vmin_cell and cell == vmax_cell:
-                outline = "#FFFFFF"
                 outline_width = 4
 
             if self.is_orange_voltage(value):
@@ -2059,23 +2071,26 @@ class ModuleMap(ttk.Frame):
                 justify="center",
             )
 
-        # Temperature circles: green low -> red at 60 C+.
+        # Temperature circles: board-pair fill; green->yellow->red temperature-gradient border.
         for sensor, point in self.temp_coords.items():
             value = cleaned_temps.get(sensor)
             x, y = self.scale_point(point)
-            fill = temp_color(value)
+
+            # Fill uses the selected board-pair color.  The border carries
+            # the temperature gradient so temperature is shown without
+            # overwriting the board identity color.
+            fill = board_color
             r = 17 if self.display_width < 900 else 20
 
-            outline = board_color
+            outline = temp_color(value)
             outline_width = 4
+            # Selected min/max are shown by a thicker border, but the border
+            # remains the temperature-gradient color.
             if sensor == tmin_sensor:
-                outline = "#58A6FF"
                 outline_width = 5
             if sensor == tmax_sensor:
-                outline = "#FF5C5C"
                 outline_width = 5
             if sensor == tmin_sensor and sensor == tmax_sensor:
-                outline = "#FFFFFF"
                 outline_width = 5
 
             if self.is_temp_fault(value):
@@ -2338,6 +2353,7 @@ class BMSGuiApp:
         self.view_mode = tk.StringVar(value="overlay")
         self.vars: dict[str, tk.StringVar] = {}
         self._left_resize_job: Optional[str] = None
+        self._last_left_layout_geometry: tuple[int, int] = (0, 0)
 
         root.title("EV4 BMS Serial GUI")
         root.geometry("1600x980")
@@ -2358,6 +2374,11 @@ class BMSGuiApp:
         self.style.configure("Pair.TButton", padding=4)
 
         self.build_ui(left_image, right_image)
+        # A restore/maximize transition can resize the root before all child panes
+        # have finished reporting their new requested sizes.  Watch the root too,
+        # not only the left pane, so the gauges are recalculated after every
+        # window-size change.
+        self.root.bind("<Configure>", self.on_root_configure, add="+")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.schedule_update()
 
@@ -2368,9 +2389,9 @@ class BMSGuiApp:
 
     def build_ui(self, left_image: Path, right_image: Path) -> None:
         # Sash-resizable three-pane layout:
-        #   left   = status/dials/BMS data
+        #   left   = status/dials
         #   center = image overlays or graph mode
-        #   right  = Active Alerts / Recent Events
+        #   right  = alerts/events/BMS values/charger/CAN
         main = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
         main.pack(fill="both", expand=True, padx=8, pady=8)
         self.main_paned = main
@@ -2396,8 +2417,11 @@ class BMSGuiApp:
         map_panel.rowconfigure(2, weight=1)
 
         event_panel.columnconfigure(0, weight=1)
-        event_panel.rowconfigure(0, weight=1)
-        event_panel.rowconfigure(1, weight=1)
+        # Right-side sections use their requested heights so Active Alerts and
+        # Recent Events only consume the number of text lines they actually show.
+        for right_row in range(5):
+            event_panel.rowconfigure(right_row, weight=0)
+        event_panel.rowconfigure(5, weight=1)  # bottom spacer absorbs extra height
 
         self.build_status_panel(left_panel)
 
@@ -2420,23 +2444,6 @@ class BMSGuiApp:
         self._dial_layout_mode = ""
         self.layout_dials("stack", left_panel.winfo_reqwidth(), 120)
 
-        self.build_info_panel(left_panel, "BMS Values", [
-            ("Pack Voltage", "pack_voltage_v"),
-            ("Current", "current_a"),
-            ("SOC", "soc_percent"),
-            ("Power Limit", "power_limit_kw"),
-            ("Max Cell Voltage", "max_cell_voltage_v"),
-            ("Min Cell Voltage", "min_cell_voltage_v"),
-            ("Max Cell Temp", "max_cell_temp_c"),
-            ("Min Cell Temp", "min_cell_temp_c"),
-            ("VI Temp", "vi_pcb_temp_c"),
-            ("HV Sense Temp", "hv_sense_temp_c"),
-            ("Hall ADC Voltage", "hall_adc_voltage_v"),
-            ("Current Zero Voltage", "current_zero_voltage"),
-        ], value_columns=2)
-
-        self.build_charger_panel(left_panel)
-        self.build_can_panel(left_panel)
         left_panel.bind("<Configure>", self.request_left_panel_resize)
         main.bind("<ButtonRelease-1>", lambda _event: (self.request_left_panel_resize(), self.request_map_resize()))
         self.root.after_idle(self.resize_left_gauges_to_available_space)
@@ -2532,8 +2539,12 @@ class BMSGuiApp:
         content.bind("<Configure>", self.request_map_resize)
         self.root.after_idle(self.resize_maps_to_available_space)
 
-        self.alert_text = self.make_text_box(event_panel, "ACTIVE ALERTS", 0, height=17, width=36)
-        self.event_text = self.make_text_box(event_panel, "RECENT EVENTS", 1, height=17, width=36)
+        self.alert_text = self.make_text_box(event_panel, "ACTIVE ALERTS", 0, height=ACTIVE_ALERT_LINES, width=36)
+        self.event_text = self.make_text_box(event_panel, "RECENT EVENTS", 1, height=RECENT_EVENT_LINES, width=36)
+
+        self.build_bms_values_panel(event_panel, row=2)
+        self.build_charger_panel(event_panel, row=3)
+        self.build_can_panel(event_panel, row=4)
 
 
     def layout_dials(self, mode: str, panel_w: int, dial_h: int) -> None:
@@ -2549,17 +2560,19 @@ class BMSGuiApp:
         for c in range(3):
             self.dial_area.columnconfigure(c, weight=1, uniform="gauges")
 
-        panel_w = max(160, int(panel_w))
-        dial_h = max(74, int(dial_h))
+        panel_w = max(140, int(panel_w))
+        dial_h = max(48, int(dial_h))
 
         if mode == "row3":
+            area_h = dial_h
             gauge_w = max(120, int((panel_w - 16) / 3))
             for idx, dial in enumerate(self.resizable_dials):
                 dial.grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 4, 0), pady=0)
                 dial.set_canvas_size(gauge_w, dial_h)
         elif mode == "row2_current_below":
-            half_w = max(140, int((panel_w - 12) / 2))
-            full_w = max(180, panel_w - 8)
+            area_h = dial_h * 2 + 8
+            half_w = max(120, int((panel_w - 12) / 2))
+            full_w = max(160, panel_w - 8)
             self.voltage_dial.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 4))
             self.temp_dial.grid(row=0, column=1, sticky="nsew", padx=(4, 0), pady=(0, 4))
             self.current_dial.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(4, 0))
@@ -2567,11 +2580,19 @@ class BMSGuiApp:
             self.temp_dial.set_canvas_size(half_w, dial_h)
             self.current_dial.set_canvas_size(full_w, dial_h)
         else:
-            full_w = max(180, panel_w - 8)
+            area_h = dial_h * 3 + 16
+            full_w = max(160, panel_w - 8)
             for idx, dial in enumerate(self.resizable_dials):
                 dial.grid(row=idx, column=0, columnspan=3, sticky="nsew", pady=(0 if idx == 0 else 8, 0))
                 dial.set_canvas_size(full_w, dial_h)
 
+        # Make the gauge section obey the calculated height.  Without this, the
+        # dial canvases can keep an old large requested height after a window is
+        # restored from fullscreen, pushing BMS/Charger rows below the visible
+        # left panel.
+        self.dial_area.configure(height=max(48, area_h))
+        self.dial_area.pack_propagate(False)
+        self.dial_area.grid_propagate(False)
         self._dial_layout_mode = mode
 
     def toggle_view_mode(self) -> None:
@@ -2590,48 +2611,94 @@ class BMSGuiApp:
             self.request_map_resize()
         self.force_redraw()
 
+    def on_root_configure(self, event: tk.Event) -> None:
+        """Handle full-screen/restore window transitions reliably.
+
+        Tk often emits several configure events while a maximized window is being
+        restored.  Recalculate after the final size has settled so the gauges can
+        shrink as well as grow.
+        """
+        if event.widget is self.root:
+            self.request_left_panel_resize()
+            self.request_map_resize()
+
     def request_left_panel_resize(self, event: Optional[tk.Event] = None) -> None:
         """Debounce gauge resizing while the left panel/window is changing."""
-        if getattr(self, "_left_resize_job", None) is not None:
-            return
-        self._left_resize_job = self.root.after(50, self.resize_left_gauges_to_available_space)
+        existing = getattr(self, "_left_resize_job", None)
+        if existing is not None:
+            try:
+                self.root.after_cancel(existing)
+            except Exception:
+                pass
+        self._left_resize_job = self.root.after(80, self.resize_left_gauges_to_available_space)
 
     def resize_left_gauges_to_available_space(self) -> None:
-        """Shrink/expand and reflow the gauges so the left-side panels fit vertically."""
+        """Resize/reflow gauges so fixed left-panel sections remain visible.
+
+        The gauges are the only flexible part of the left panel.  They expand into
+        blank space on tall windows, but they also shrink immediately when the
+        window is restored from fullscreen or made shorter.
+        """
         self._left_resize_job = None
 
         if not hasattr(self, "left_panel") or not hasattr(self, "resizable_dials"):
             return
 
-        panel_h = self.left_panel.winfo_height()
-        panel_w = self.left_panel.winfo_width()
+        # Flush pending geometry work so winfo_height() reflects the new restored
+        # size instead of the previous fullscreen size.
+        try:
+            self.root.update_idletasks()
+        except Exception:
+            pass
+
+        panel_h = int(self.left_panel.winfo_height())
+        panel_w = int(self.left_panel.winfo_width())
         if panel_h < 120 or panel_w < 120:
             return
 
         fixed_h = 0
+        fixed_count = 0
         for child in self.left_panel.winfo_children():
             if child is getattr(self, "dial_area", None):
                 continue
-            fixed_h += max(child.winfo_height(), child.winfo_reqheight())
+            if not child.winfo_ismapped():
+                continue
 
-        reserved_padding = 44
-        available_for_dials = max(70, panel_h - fixed_h - reserved_padding)
+            # Use requested height for fixed panels so they are allocated enough
+            # room even if they are currently clipped by an older oversized gauge
+            # layout.
+            req_h = child.winfo_reqheight()
+            actual_h = child.winfo_height()
+            fixed_h += max(req_h, actual_h if actual_h > 1 else 0)
+            fixed_count += 1
 
-        # Preferred layout order:
-        #   1) all three gauges on one row if the side panel is wide enough
-        #   2) voltage/temp on one row with current below
-        #   3) stacked gauges, matching the prior layout
-        if panel_w >= 540 and available_for_dials >= 82:
+        reserved_padding = 12 + fixed_count * 2
+        available_for_dials = panel_h - fixed_h - reserved_padding
+
+        # Layout preference:
+        #   wide panel   -> three gauges on one row
+        #   medium panel -> voltage/temp on one row, current below
+        #   narrow panel -> stacked, with height compressed as needed
+        if panel_w >= 720 and available_for_dials >= 70:
             mode = "row3"
-            dial_h = max(74, min(150, available_for_dials - 4))
-        elif panel_w >= 330 and available_for_dials >= 160:
+            dial_h = max(48, min(320, available_for_dials - 4))
+        elif panel_w >= 520 and available_for_dials >= 112:
             mode = "row2_current_below"
-            dial_h = max(76, min(145, int((available_for_dials - 10) / 2)))
+            dial_h = max(48, min(320, int((available_for_dials - 8) / 2)))
         else:
             mode = "stack"
-            dial_h = max(74, min(190, int((available_for_dials - 16) / 3)))
+            dial_h = max(48, min(320, int((available_for_dials - 16) / 3)))
 
         self.layout_dials(mode, panel_w, dial_h)
+
+        # A second pass catches the final pane height after Tk applies the new
+        # gauge requested size.  This is important during maximize/restore where
+        # the first configure event may be intermediate.
+        geometry = (panel_w, panel_h)
+        if geometry != getattr(self, "_last_left_layout_geometry", (0, 0)):
+            self._last_left_layout_geometry = geometry
+            self.root.after(180, self.request_left_panel_resize)
+
         self.root.after_idle(self.force_redraw)
 
     def request_map_resize(self, event: Optional[tk.Event] = None) -> None:
@@ -2784,10 +2851,17 @@ class BMSGuiApp:
         title: str,
         fields: list[tuple[str, str]],
         value_columns: int = 1,
+        row: Optional[int] = None,
+        label_width: int = 17,
+        value_width: int = 13,
+        value_wraplength: int = 115,
     ) -> None:
         """Build a compact value panel with one or more label/value columns."""
         frame = ttk.LabelFrame(parent, text=title)
-        frame.pack(fill="x", pady=(8, 0))
+        if row is None:
+            frame.pack(fill="x", pady=(8, 0))
+        else:
+            frame.grid(row=row, column=0, sticky="we", pady=(6, 0))
 
         value_columns = max(1, value_columns)
         rows_per_column = max(1, math.ceil(len(fields) / value_columns))
@@ -2803,14 +2877,14 @@ class BMSGuiApp:
             base_col = block_col * 2
             value_pad = (4, 12) if block_col < value_columns - 1 else 4
 
-            ttk.Label(frame, text=label + ":", width=17).grid(
+            ttk.Label(frame, text=label + ":", width=label_width).grid(
                 row=row,
                 column=base_col,
                 sticky="w",
                 padx=(4, 2),
                 pady=2,
             )
-            ttk.Label(frame, textvariable=self.make_var(key), width=13, wraplength=115).grid(
+            ttk.Label(frame, textvariable=self.make_var(key), width=value_width, wraplength=value_wraplength).grid(
                 row=row,
                 column=base_col + 1,
                 sticky="w",
@@ -2818,7 +2892,23 @@ class BMSGuiApp:
                 pady=2,
             )
 
-    def build_charger_panel(self, parent: tk.Widget) -> None:
+    def build_bms_values_panel(self, parent: tk.Widget, row: Optional[int] = None) -> None:
+        self.build_info_panel(parent, "BMS Values", [
+            ("Pack Voltage", "pack_voltage_v"),
+            ("Current", "current_a"),
+            ("SOC", "soc_percent"),
+            ("Power Limit", "power_limit_kw"),
+            ("Max Cell Voltage", "max_cell_voltage_v"),
+            ("Min Cell Voltage", "min_cell_voltage_v"),
+            ("Max Cell Temp", "max_cell_temp_c"),
+            ("Min Cell Temp", "min_cell_temp_c"),
+            ("VI Temp", "vi_pcb_temp_c"),
+            ("HV Sense Temp", "hv_sense_temp_c"),
+            ("Hall ADC Voltage", "hall_adc_voltage_v"),
+            ("Current Zero Voltage", "current_zero_voltage"),
+        ], value_columns=1, row=row, label_width=18, value_width=14, value_wraplength=170)
+
+    def build_charger_panel(self, parent: tk.Widget, row: Optional[int] = None) -> None:
         self.build_info_panel(parent, "Charger", [
             ("Command", "charger_cmd_text"),
             ("Request Voltage", "charger_cmd_voltage"),
@@ -2828,11 +2918,14 @@ class BMSGuiApp:
             ("Status Current", "charger_status_current"),
             ("Status Byte", "charger_status_byte"),
             ("Faults", "charger_status_faults"),
-        ], value_columns=2)
+        ], value_columns=1, row=row, label_width=18, value_width=14, value_wraplength=170)
 
-    def build_can_panel(self, parent: tk.Widget) -> None:
+    def build_can_panel(self, parent: tk.Widget, row: Optional[int] = None) -> None:
         frame = ttk.LabelFrame(parent, text="CAN / Serial")
-        frame.pack(fill="x", pady=(8, 0))
+        if row is None:
+            frame.pack(fill="x", pady=(8, 0))
+        else:
+            frame.grid(row=row, column=0, sticky="we", pady=(6, 0))
 
         # Split CAN activity into TX and RX columns so the panel stays compact
         # and the two directions can be compared at a glance.
@@ -3138,16 +3231,16 @@ class BMSGuiApp:
             )
             x += item_w
 
-        temp_text = "Temp: RGB green→yellow→red at 60C+    -55C ignored"
-        voltage_text = "Voltage fill/border: purple 2.5V → blue 4.2V    Min/Max = all boards / every location"
+        temp_text = "Temp border: RGB green→yellow→red at 60C+    -55C ignored"
+        voltage_text = "Voltage border: purple 2.5V → blue 4.2V    Fill = board color    Min/Max = all boards / every location"
 
         for kind, text in (("temp", temp_text), ("voltage", voltage_text)):
             item_w = min(width - 16, 520 if kind == "temp" else 650)
             wrap(item_w)
             if kind == "temp":
-                c.create_oval(x, y - 9, x + 18, y + 9, fill=temp_color(25), outline="#F2F2F2", width=2)
+                c.create_oval(x, y - 9, x + 18, y + 9, fill=PAIR_COLORS[1], outline=temp_color(60), width=3)
             else:
-                c.create_rectangle(x, y - 8, x + 18, y + 10, fill=voltage_color(3.4), outline=voltage_color(3.4), width=2)
+                c.create_rectangle(x, y - 8, x + 18, y + 10, fill=PAIR_COLORS[1], outline=voltage_color(3.4), width=3)
             c.create_text(
                 x + 28,
                 y,
@@ -3305,6 +3398,12 @@ class BMSGuiApp:
         except queue.Empty:
             pass
         self.update_gui()
+        # Periodic geometry check catches Windows maximize/restore transitions that
+        # do not deliver a useful left-pane Configure event.
+        if hasattr(self, "left_panel"):
+            geom = (self.left_panel.winfo_width(), self.left_panel.winfo_height())
+            if geom != getattr(self, "_last_left_layout_geometry", (0, 0)):
+                self.request_left_panel_resize()
         if not self.stop_event.is_set():
             self.root.after(250, self.schedule_update)
 
