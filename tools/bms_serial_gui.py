@@ -1444,6 +1444,28 @@ class ModuleMap(ttk.Frame):
         )
         self.canvas.pack(fill="both", expand=False)
 
+    def resize_to_width(self, width: int) -> bool:
+        """Resize the module image/canvas while preserving image aspect ratio.
+
+        Overlay coordinates stay correct because every badge/circle is scaled
+        from the fixed source-image coordinates by scale_point().
+        Returns True only when the rendered size actually changed.
+        """
+        width = max(320, int(width))
+        if abs(width - self.display_width) < 2:
+            return False
+
+        self.display_width = width
+        self.display_height = max(1, int(round(self.src_h * (self.display_width / self.src_w))))
+        self.resized = self.source_image.resize((self.display_width, self.display_height), Image.LANCZOS)
+        self.photo = ImageTk.PhotoImage(self.resized)
+        self.canvas.configure(width=self.display_width, height=self.display_height)
+        return True
+
+    def width_for_canvas_height(self, canvas_height: int) -> int:
+        canvas_height = max(1, int(canvas_height))
+        return max(320, int(round(canvas_height * self.src_w / self.src_h)))
+
     def scale_point(self, point: tuple[int, int]) -> tuple[float, float]:
         x, y = point
         return x * self.display_width / self.src_w, y * self.display_height / self.src_h
@@ -2045,19 +2067,24 @@ class BMSGuiApp:
         self.legend.grid(row=1, column=0, sticky="we", pady=(4, 4))
 
         maps = ttk.Frame(map_panel)
-        maps.grid(row=2, column=0, sticky="nwe")
+        maps.grid(row=2, column=0, sticky="nsew")
         maps.columnconfigure(0, weight=1)
+        maps.rowconfigure(0, weight=0)
+        maps.rowconfigure(1, weight=0)
+        self.map_panel = map_panel
+        self.maps_frame = maps
+        self._map_resize_job: Optional[str] = None
 
-        # Larger overlays: the images are stacked vertically instead of side-by-side.
-        # This gives the module maps most of the screen width while keeping the
-        # dashboard and events visible.
+        # The map width is no longer fixed.  Start at a conservative size so
+        # the side panels are not pushed off-screen, then resize to the actual
+        # center-column space after Tk finishes laying out the window.
         self.left_map = ModuleMap(
             maps,
             "Left Side: EVEN Cell Voltages / Odd U1-U19",
             left_image,
             LEFT_CELL_COORDS,
             LEFT_TEMP_COORDS,
-            width=1180,
+            width=840,
             voltage_parity="even",
         )
         self.left_map.grid(row=0, column=0, sticky="n", pady=(0, 8))
@@ -2068,13 +2095,73 @@ class BMSGuiApp:
             right_image,
             RIGHT_CELL_COORDS,
             RIGHT_TEMP_COORDS,
-            width=1180,
+            width=840,
             voltage_parity="odd",
         )
         self.right_map.grid(row=1, column=0, sticky="n")
 
+        map_panel.bind("<Configure>", self.request_map_resize)
+        maps.bind("<Configure>", self.request_map_resize)
+        self.root.after_idle(self.resize_maps_to_available_space)
+
         self.alert_text = self.make_text_box(event_panel, "ACTIVE ALERTS", 0, height=17, width=36)
         self.event_text = self.make_text_box(event_panel, "RECENT EVENTS", 1, height=17, width=36)
+
+    def request_map_resize(self, event: Optional[tk.Event] = None) -> None:
+        """Debounce center-map resizing while the window/layout is changing."""
+        if getattr(self, "_map_resize_job", None) is not None:
+            return
+        self._map_resize_job = self.root.after(50, self.resize_maps_to_available_space)
+
+    def resize_maps_to_available_space(self) -> None:
+        """Fit the two image overlays inside the center area between side panels.
+
+        The source coordinates do not change.  Only the rendered image/canvas
+        size changes, and ModuleMap.scale_point() keeps every cell-voltage badge
+        and temperature circle locked to the same relative position on the image.
+        """
+        self._map_resize_job = None
+
+        if not hasattr(self, "maps_frame"):
+            return
+
+        # Width available between the left status panel and right alert panel.
+        available_width = max(0, self.maps_frame.winfo_width() - 4)
+
+        # Height available below the controls/legend.  Use it too so both stacked
+        # maps stay visible instead of forcing a horizontal/vertical overflow.
+        available_height = max(0, self.maps_frame.winfo_height() - 8)
+
+        if available_width < 100:
+            return
+
+        width_from_height: Optional[int] = None
+        if available_height >= 250:
+            # Two maps are stacked vertically.  Subtract their label/requested
+            # header heights and the inter-map gap before computing canvas size.
+            label_h = max(
+                self.left_map.winfo_children()[0].winfo_reqheight(),
+                self.right_map.winfo_children()[0].winfo_reqheight(),
+                18,
+            )
+            canvas_height_each = max(160, int((available_height - (2 * label_h) - 12) / 2))
+            width_from_height = min(
+                self.left_map.width_for_canvas_height(canvas_height_each),
+                self.right_map.width_for_canvas_height(canvas_height_each),
+            )
+
+        desired_width = available_width
+        if width_from_height is not None:
+            desired_width = min(desired_width, width_from_height)
+
+        desired_width = max(320, int(desired_width))
+
+        changed = False
+        changed = self.left_map.resize_to_width(desired_width) or changed
+        changed = self.right_map.resize_to_width(desired_width) or changed
+
+        if changed:
+            self.root.after_idle(self.force_redraw)
 
     def make_text_box(
         self,
