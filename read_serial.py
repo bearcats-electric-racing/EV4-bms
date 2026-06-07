@@ -3,7 +3,8 @@ import time
 import os
 
 # --- CONFIGURATION ---
-SERIAL_PORT = '/dev/ttyACM0' 
+# SERIAL_PORT = '/dev/ttyACM0'  ##linux
+SERIAL_PORT = 'COM8' ##windows
 BAUD_RATE = 9600
 
 if not os.path.exists("data"):

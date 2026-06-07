@@ -135,8 +135,84 @@ long current_count = 0;
 long current_sum = 0;
 int RMS_Current = 0;
 
-float raw_current_from_voltage(float volt) {
-  return (volt - 2.5f) / 0.0267f;
+// ============================================================
+// PCB temperature monitor from TLC555 frequency outputs
+// VI Temp  -> Teensy pin 6
+// HV Temp  -> Teensy pin 9
+// ============================================================
+
+#ifndef F_CPU_ACTUAL
+#define F_CPU_ACTUAL F_CPU
+#endif
+
+constexpr uint8_t VI_TEMP_PIN = 6;
+constexpr uint8_t HV_TEMP_PIN = 9;
+
+constexpr float LN2_F = 0.69314718056f;
+constexpr float INVALID_TEMP_C = -55.0f;
+
+// ----- EDIT THESE TO MATCH YOUR ACTUAL BOM -----
+// From your schematic these appear to be:
+constexpr float VI_RA_OHM       = 1000.0f;     // R28, verify value
+constexpr float VI_RSERIES_OHM  = 220.0f;      // R29, verify value
+constexpr float VI_CT_F         = 3.3e-9f;     // C9 = 3.3 nF
+
+constexpr float HV_RA_OHM       = 1000.0f;     // R1 ERA-3AEB102V = 1 k
+constexpr float HV_RSERIES_OHM  = 220.0f;      // R2 RT0603...220R = 220 ohm
+constexpr float HV_CT_F         = 3.3e-9f;     // C2 = 3.3 nF
+
+// Thermistor model. REPLACE beta with the exact datasheet value.
+constexpr float NTC_R0_OHM      = 10000.0f;    // 10k at 25 C
+constexpr float NTC_T0_K        = 298.15f;     // 25 C in kelvin
+constexpr float NTC_BETA_K      = 3435.0f;     // placeholder; verify datasheet
+
+// Valid frequency window. With 1k + 220R + 10k NTC + 3.3nF,
+// room temp should be around 20 kHz.
+constexpr float TEMP_FREQ_MIN_HZ = 1000.0f;
+constexpr float TEMP_FREQ_MAX_HZ = 500000.0f;
+
+struct PcbTempCapture {
+  volatile uint32_t lastRiseCycles = 0;
+  volatile uint32_t periodCycles = 0;
+  volatile uint32_t lastRiseMicros = 0;
+  volatile uint32_t edgeCount = 0;
+  volatile bool havePeriod = false;
+};
+
+struct PcbTempReading {
+  float frequencyHz = 0.0f;
+  float rbTotalOhm = 0.0f;
+  float ntcOhm = 0.0f;
+  float tempC = INVALID_TEMP_C;
+  bool valid = false;
+};
+
+PcbTempCapture viTempCap;
+PcbTempCapture hvTempCap;
+
+PcbTempReading viPcbTemp;
+PcbTempReading hvPcbTemp;
+
+float vi_pcb_temp_c = INVALID_TEMP_C;
+float hv_pcb_temp_c = INVALID_TEMP_C;
+bool vi_pcb_temp_valid = false;
+bool hv_pcb_temp_valid = false;
+
+static inline void tempRiseISR(PcbTempCapture &cap) {
+  const uint32_t nowCycles = ARM_DWT_CYCCNT;
+  const uint32_t nowMicros = micros();
+
+  const uint32_t dtCycles = nowCycles - cap.lastRiseCycles;
+
+  cap.lastRiseCycles = nowCycles;
+  cap.lastRiseMicros = nowMicros;
+  cap.edgeCount++;
+
+  // Need at least 2 edges before a real period exists.
+  if (cap.edgeCount >= 2 && dtCycles > 100) {
+    cap.periodCycles = dtCycles;
+    cap.havePeriod = true;
+  }
 }
 
 
@@ -176,6 +252,32 @@ bool calibrate_current_offset() {
   return true;
 }
 
+bool serialCommandAvailable(String &cmd) {
+  if (!Serial.available()) {
+    return false;
+  }
+
+  cmd = Serial.readStringUntil('\n');
+  cmd.trim();
+  return cmd.length() > 0;
+}
+
+bool checkForDebugCommand() {
+  String input;
+  if (serialCommandAvailable(input)) {
+    Serial.print("Serial command received: ");
+    Serial.println(input);
+
+    if (input == "debug") {
+      mode = "debug";
+      Serial.println("Debug command accepted");
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void setup() {
   //open shutdown circuit
   pinMode(20, OUTPUT);
@@ -192,7 +294,7 @@ void setup() {
   //start timers
   sense_watchdog_timer = start_time - 5000;  //initial sense_watchdog timer with expired watchdog time (T - 2000 milliseconds)
 
-  Serial.begin(9600);
+  Serial.begin(115200); //9600 old baud
   Serial.println("startup");
   Serial.print("Start Time: ");
   Serial.println(start_time);
@@ -266,8 +368,12 @@ void setup() {
   Serial.println(current_offset, 4);
 
   check_memory();  //must be called to use SD card
-
   //voltage poll and temperature poll take 16 and 24 milliseconds. The rest of the measure functions only take 1 or two milliseconds
+  
+  pinMode(6, INPUT);
+  pinMode(9, INPUT);
+  delay(10);
+  init_pcb_temp_inputs(); //initialize PCB temp monitor inputs and interrupts for HV sense and VI
 
   if (mode == "") {
     measure_voltage();
@@ -278,9 +384,13 @@ void setup() {
     bool CAN_baud_alt = true;
     while (1) {
       Serial.println("Setup");
+      if (checkForDebugCommand()) {
+        break;
+      }
       measure_current();
       measure_voltage();
       measure_temp();
+      measure_pcb_temps();
       update_SOC();
       TX_CAN();       //wrong baud rate every other message
       print_min_max();
@@ -297,6 +407,9 @@ void setup() {
       else{
         can.setBaudRate(250000);
         CAN_baud_alt = true;
+      }
+      if (checkForDebugCommand()) {
+        break;
       }
       
       String input = Serial.readStringUntil('\n');
@@ -344,6 +457,7 @@ void loop() {
     while (1) {  //precharge cycle
       measure_voltage();
       measure_temp();
+      measure_pcb_temps();
       reset_watchdog();
       charger_enable(true);  //send charge-disable message and clear comm fault on charger
       msg = RX_CAN();
@@ -356,7 +470,7 @@ void loop() {
       //}
     }
     //00100 low ac power on charger flag
-    delay(500);  //delay so that another Charger CAN message is sent to the BMS (so that an empty CAN buffer is not read which would indicate a charger error)
+    delay(1000);  //delay so that another Charger CAN message is sent to the BMS (so that an empty CAN buffer is not read which would indicate a charger error)
 
     unsigned int charge_start_time = millis();
     while (1) {  //charge cycle
@@ -365,6 +479,7 @@ void loop() {
       Serial.println(msg.buf[4]);
       measure_voltage();
       measure_temp();
+      measure_pcb_temps();
       measure_current();
       update_SOC();
       Serial.print("current: ");
@@ -392,13 +507,13 @@ void loop() {
           charger_fault = 1;
         }
       }
-      delay(200);
+      delay(1000);
     }
 
     //charger fault
     while (1) {
       Serial.println("Charger Fault");
-      delay(100);
+      delay(1000);
     }
   }
 
@@ -418,6 +533,7 @@ void loop() {
       measure_current();
       measure_voltage();
       measure_temp();
+      measure_pcb_temps();
       reset_watchdog();
       msg = RX_CAN();
       if (msg.id == INV_TX_ID) {
@@ -455,6 +571,7 @@ void loop() {
       if (n % temp_interval == 0) {
         Serial.println("New Temp");
         measure_temp();
+        measure_pcb_temps();
         for (int i = 0; i < num_boards; i++) {
           for (int j = 0; j < 9; j++) {
             temp_buffer[int(n / temp_interval)][i][j] = cell_temp[i][j];
@@ -602,10 +719,11 @@ void print_min_max() {  //This function prints the min and max parameters
   Serial.println(max_cell_temp);
   Serial.print("Min cell_temp: ");
   Serial.println(min_cell_temp);
-  Serial.print("Max die temp: ");
-  Serial.println(max_die_temp);
-  Serial.print("Min die temp: ");
-  Serial.println(min_die_temp);
+  // Serial.print("Max die temp: ");
+  // Serial.println(max_die_temp);
+  // Serial.print("Min die temp: ");
+  // Serial.println(min_die_temp);
+  print_pcb_temps();
 }
 
 
@@ -799,6 +917,13 @@ void SD_data_write() {
         dataFile.print(current);
         dataFile.print("\n");
       }
+
+      dataFile.print("\nPCB_Temperature_C,VI,HV\n");
+      filePrintTemp(dataFile, vi_pcb_temp_c, vi_pcb_temp_valid);
+      dataFile.print(", ");
+      filePrintTemp(dataFile, hv_pcb_temp_c, hv_pcb_temp_valid);
+      dataFile.print("\n");
+
       dataFile.print("\nTime:");
 
       //time stamp
@@ -939,7 +1064,7 @@ void poll_ADC(uint16_t command, bool curr_measure) {
         Serial.println("ADBMS6830B ADC TImeout Error");
         break;
     }
-}
+  }
 
   // Serial.println("ADC Conversion Done!");
   // Serial.println(num_polls);
@@ -1368,6 +1493,10 @@ bool calibrate_current_zero() {
   return true;
 }
 
+float raw_current_from_voltage(float volt) {
+  return (volt - 2.5f) / 0.0267f;
+}
+
 // void measure_current() {
 //   uint16_t ADC;
 //   float volt;
@@ -1770,33 +1899,33 @@ void sense_status() {  //really should be the measure die temp function
   Serial.println();
 }
 
-// void sense_status(){
-//   uint8_t response[num_boards][6];
-//   read_register_group(RDSTATB , response);
-
-//   undervoltage_flag[0] = response[2]>>0 & 0b1;
-//   undervoltage_flag[1] = response[2]>>2 & 0b1;
-//   undervoltage_flag[2] = response[2]>>4 & 0b1;
-//   undervoltage_flag[3] = response[2]>>6 & 0b1;
-//   undervoltage_flag[4] = response[3]>>0 & 0b1;
-//   undervoltage_flag[5] = response[3]>>2 & 0b1;
-//   undervoltage_flag[6] = 0;
-//   undervoltage_flag[7] = 0;
-//   undervoltage_flag[8] = 0;
-//   undervoltage_flag[9] = 0;
-//   undervoltage_flag[10] = 0;
-//   undervoltage_flag[11] = 0;
-//   undervoltage_flag[12] = 0;
-//   undervoltage_flag[13] = 0;
-//   undervoltage_flag[14] = 0;
-//   undervoltage_flag[15] = 0;
-//   Serial.println("voltage flags");
-//   for(int i = 0; i<=5; i++){
-//     Serial.println(undervoltage_flag[i]);
-//   }
-//   Serial.println("done");
-
-// }
+/*
+void sense_status(){
+  uint8_t response[num_boards][6];
+  read_register_group(RDSTATB , response);
+  undervoltage_flag[0] = response[2]>>0 & 0b1;
+  undervoltage_flag[1] = response[2]>>2 & 0b1;
+  undervoltage_flag[2] = response[2]>>4 & 0b1;
+  undervoltage_flag[3] = response[2]>>6 & 0b1;
+  undervoltage_flag[4] = response[3]>>0 & 0b1;
+  undervoltage_flag[5] = response[3]>>2 & 0b1;
+  undervoltage_flag[6] = 0;
+  undervoltage_flag[7] = 0;
+  undervoltage_flag[8] = 0;
+  undervoltage_flag[9] = 0;
+  undervoltage_flag[10] = 0;
+  undervoltage_flag[11] = 0;
+  undervoltage_flag[12] = 0;
+  undervoltage_flag[13] = 0;
+  undervoltage_flag[14] = 0;
+  undervoltage_flag[15] = 0;
+  Serial.println("voltage flags");
+  for(int i = 0; i<=5; i++){
+    Serial.println(undervoltage_flag[i]);
+  }
+  Serial.println("done");
+}
+*/
 
 void flash_leds() {                        //Flashes each discharge resistor sequentially
   int time_on = 1000;                      //Time each led is on in milliseconds
@@ -1859,6 +1988,7 @@ void myCallback() {
   Serial.println("Callback called");
   measure_voltage();
   measure_temp();
+  measure_pcb_temps();
   reset_watchdog();
   watchdog_callback = true;  //set watchdog callback flag
 }
@@ -1939,3 +2069,139 @@ uint16_t pec10_calc_data_ccnt(const uint8_t *data6, uint8_t ccnt6) {
 
     return (rem & 0x03FF);
 }
+
+void viTempISR() {
+  tempRiseISR(viTempCap);
+}
+
+void hvTempISR() {
+  tempRiseISR(hvTempCap);
+}
+
+float ntcResistanceToTempC(float rOhm) {
+  if (rOhm <= 0.0f || !isfinite(rOhm)) {
+    return INVALID_TEMP_C;
+  }
+
+  const float invT =
+      (1.0f / NTC_T0_K) +
+      (1.0f / NTC_BETA_K) * logf(rOhm / NTC_R0_OHM);
+
+  if (invT <= 0.0f || !isfinite(invT)) {
+    return INVALID_TEMP_C;
+  }
+
+  return (1.0f / invT) - 273.15f;
+}
+
+PcbTempReading decode555Temp(
+    PcbTempCapture &cap,
+    float raOhm,
+    float rSeriesOhm,
+    float ctFarads
+) {
+  PcbTempReading out;
+
+  uint32_t periodCyclesCopy;
+  uint32_t lastRiseMicrosCopy;
+  bool havePeriodCopy;
+
+  noInterrupts();
+  periodCyclesCopy = cap.periodCycles;
+  lastRiseMicrosCopy = cap.lastRiseMicros;
+  havePeriodCopy = cap.havePeriod;
+  interrupts();
+
+  // No recent pulse = invalid or disconnected signal.
+  if (!havePeriodCopy || (uint32_t)(micros() - lastRiseMicrosCopy) > 250000UL) {
+    return out;
+  }
+
+  const float periodSeconds =
+      (float)periodCyclesCopy / (float)F_CPU_ACTUAL;
+
+  if (periodSeconds <= 0.0f || !isfinite(periodSeconds)) {
+    return out;
+  }
+
+  out.frequencyHz = 1.0f / periodSeconds;
+
+  if (out.frequencyHz < TEMP_FREQ_MIN_HZ || out.frequencyHz > TEMP_FREQ_MAX_HZ) {
+    return out;
+  }
+
+  // TLC555 astable:
+  // period = ln(2) * CT * (RA + 2*RB_total)
+  // RB_total = thermistor path + fixed series resistor
+  out.rbTotalOhm =
+      ((periodSeconds / (LN2_F * ctFarads)) - raOhm) * 0.5f;
+
+  out.ntcOhm = out.rbTotalOhm - rSeriesOhm;
+
+  if (out.ntcOhm <= 0.0f || !isfinite(out.ntcOhm)) {
+    return out;
+  }
+
+  out.tempC = ntcResistanceToTempC(out.ntcOhm);
+
+  if (out.tempC < -40.0f || out.tempC > 150.0f) {
+    return out;
+  }
+
+  out.valid = true;
+  return out;
+}
+
+void init_pcb_temp_inputs() {
+  // Enable ARM cycle counter for high-resolution frequency measurement.
+  ARM_DEMCR |= ARM_DEMCR_TRCENA;
+  ARM_DWT_CTRL |= ARM_DWT_CTRL_CYCCNTENA;
+
+  pinMode(VI_TEMP_PIN, INPUT);
+  pinMode(HV_TEMP_PIN, INPUT);
+
+  attachInterrupt(digitalPinToInterrupt(VI_TEMP_PIN), viTempISR, RISING);
+  attachInterrupt(digitalPinToInterrupt(HV_TEMP_PIN), hvTempISR, RISING);
+}
+
+void measure_pcb_temps() {
+  viPcbTemp = decode555Temp(viTempCap, VI_RA_OHM, VI_RSERIES_OHM, VI_CT_F);
+  hvPcbTemp = decode555Temp(hvTempCap, HV_RA_OHM, HV_RSERIES_OHM, HV_CT_F);
+
+  vi_pcb_temp_valid = viPcbTemp.valid;
+  hv_pcb_temp_valid = hvPcbTemp.valid;
+
+  vi_pcb_temp_c = vi_pcb_temp_valid ? viPcbTemp.tempC : INVALID_TEMP_C;
+  hv_pcb_temp_c = hv_pcb_temp_valid ? hvPcbTemp.tempC : INVALID_TEMP_C;
+}
+
+void printOnePcbTemp(const char *label, const PcbTempReading &t) {
+  Serial.print(label);
+  Serial.print(": ");
+
+  if (!t.valid) {
+    Serial.println("INVALID");
+    return;
+  }
+
+  Serial.print(t.tempC, 2);
+  Serial.print(" C, ");
+  Serial.print(t.frequencyHz, 1);
+  Serial.print(" Hz, ");
+  Serial.print(t.ntcOhm, 1);
+  Serial.println(" ohm");
+}
+
+void print_pcb_temps() {
+  printOnePcbTemp("VI PCB Temp", viPcbTemp);
+  printOnePcbTemp("HV PCB Temp", hvPcbTemp);
+}
+
+void filePrintTemp(File &file, float tempC, bool valid) {
+  if (valid) {
+    file.print(tempC, 2);
+  } else {
+    file.print("INVALID");
+  }
+}
+
