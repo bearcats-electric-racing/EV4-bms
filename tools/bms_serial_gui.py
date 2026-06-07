@@ -187,6 +187,10 @@ SERIAL_BAD_PORT_COOLDOWN_S = 2.0
 SERIAL_NO_DATA_PORT_COOLDOWN_S = 6.0
 CELL_VOLTAGE_ACTIVITY_FLASH_S = 0.60
 CELL_VOLTAGE_REFRESH_WINDOW_SAMPLES = 50
+CURRENT_HISTORY_WINDOW_S = 60.0
+CURRENT_HISTORY_MAX_SAMPLES = 10000
+CURRENT_DIAL_MIN_A = -36.0
+CURRENT_DIAL_MAX_A = 300.0
 
 CSV_COLUMNS = [
     "pc_timestamp_iso",
@@ -305,6 +309,31 @@ RIGHT_TEMP_COORDS = {
 }
 
 
+GRAPH_SERIES = [
+    ("pack_voltage_v", "Pack Voltage", "V", "#58A6FF"),
+    ("charger_voltage_v", "Charger Voltage", "V", "#7AC943"),
+    ("charger_status_voltage_v", "Status Voltage", "V", "#FFD23F"),
+    ("max_cell_voltage_v", "Max Cell Voltage", "V", "#FF8C1A"),
+    ("min_cell_voltage_v", "Min Cell Voltage", "V", "#A66CFF"),
+    ("hall_adc_voltage_v", "Hall ADC Voltage", "V", "#00D1FF"),
+    ("current_zero_voltage", "Current Zero Voltage", "V", "#C9D1D9"),
+    ("current_a", "Current", "A", "#FFD23F"),
+    ("charger_current_a", "Charger Current", "A", "#7AC943"),
+    ("charger_status_current_a", "Status Current", "A", "#00AEEF"),
+    ("max_cell_temp_c", "Max Cell Temp", "C", "#FF5C5C"),
+    ("min_cell_temp_c", "Min Cell Temp", "C", "#58A6FF"),
+    ("vi_pcb_temp_c", "VI Temp", "C", "#A66CFF"),
+    ("hv_sense_temp_c", "HV Sense Temp", "C", "#FF8C1A"),
+    ("soc_percent", "SOC", "%", "#2ECC71"),
+    ("power_limit_kw", "Power Limit", "kW", "#F2F2F2"),
+]
+GRAPH_SERIES_META = {key: {"label": label, "unit": unit, "color": color} for key, label, unit, color in GRAPH_SERIES}
+DEFAULT_GRAPH_KEYS = {
+    "pack_voltage_v", "current_a", "max_cell_voltage_v", "min_cell_voltage_v",
+    "max_cell_temp_c", "min_cell_temp_c", "vi_pcb_temp_c", "hv_sense_temp_c",
+}
+
+
 @dataclass
 class MonitorState:
     start_time: float = field(default_factory=time.time)
@@ -335,6 +364,12 @@ class MonitorState:
     last_cell_voltage_update_time: Optional[float] = None
     cell_voltage_refresh_intervals_ms: deque[float] = field(
         default_factory=lambda: deque(maxlen=CELL_VOLTAGE_REFRESH_WINDOW_SAMPLES)
+    )
+    current_samples: deque[tuple[float, float]] = field(
+        default_factory=lambda: deque(maxlen=CURRENT_HISTORY_MAX_SAMPLES)
+    )
+    time_series: deque[tuple[float, str, float, str]] = field(
+        default_factory=lambda: deque(maxlen=50000)
     )
 
 
@@ -485,6 +520,58 @@ def get_latest_float(state: MonitorState, key: str) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def record_time_series_sample(
+    state: MonitorState,
+    now: float,
+    key: str,
+    value: Any,
+    unit: str = "",
+) -> None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return
+    if math.isnan(numeric):
+        return
+
+    # Normalize units for graph grouping.  The graph metadata wins when present.
+    graph_unit = GRAPH_SERIES_META.get(key, {}).get("unit", unit)
+    state.time_series.append((now, key, numeric, graph_unit))
+
+    cutoff = now - 7200.0
+    while state.time_series and state.time_series[0][0] < cutoff:
+        state.time_series.popleft()
+
+
+def record_current_sample(state: MonitorState, now: float, value: Any) -> None:
+    try:
+        current_a = float(value)
+    except (TypeError, ValueError):
+        return
+    if math.isnan(current_a):
+        return
+    state.current_samples.append((now, current_a))
+
+
+def recent_current_minmax(
+    state: MonitorState,
+    now: Optional[float] = None,
+    window_s: float = CURRENT_HISTORY_WINDOW_S,
+) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    if now is None:
+        now = time.time()
+
+    cutoff = now - window_s
+    while state.current_samples and state.current_samples[0][0] < cutoff:
+        state.current_samples.popleft()
+
+    values = [value for _sample_time, value in state.current_samples]
+    latest = values[-1] if values else get_latest_float(state, "current_a")
+    if not values:
+        return latest, latest, latest
+    return min(values), max(values), latest
 
 
 def update_derived_active_alerts(state: MonitorState) -> None:
@@ -645,6 +732,8 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
             "value": display_value,
             "unit": "",
         })
+        if not invalid and temp_c_text is not None:
+            record_time_series_sample(state, now, key, float(temp_c_text), "C")
         set_active_alert(state, key, f"{display_name} PCB Temp: INVALID", invalid)
         important = True
 
@@ -682,6 +771,8 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
             cmd = decode_charger_command(data)
             if cmd:
                 state.charger_cmd = cmd
+                record_time_series_sample(state, now, "charger_voltage_v", cmd["voltage_v"], "V")
+                record_time_series_sample(state, now, "charger_current_a", cmd["current_a"], "A")
                 row.update({
                     "charger_cmd_voltage_v": f"{cmd['voltage_v']:.1f}",
                     "charger_cmd_current_a": f"{cmd['current_a']:.1f}",
@@ -713,6 +804,8 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
             status = decode_charger_status(data)
             if status:
                 state.charger_status = status
+                record_time_series_sample(state, now, "charger_status_voltage_v", status["voltage_v"], "V")
+                record_time_series_sample(state, now, "charger_status_current_a", status["current_a"], "A")
                 update_charger_active_alert(state, status)
                 row.update({
                     "charger_status_voltage_v": f"{status['voltage_v']:.2f}",
@@ -756,6 +849,8 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
             status = decode_charger_status(data)
             if status:
                 state.charger_status = status
+                record_time_series_sample(state, now, "charger_status_voltage_v", status["voltage_v"], "V")
+                record_time_series_sample(state, now, "charger_status_current_a", status["current_a"], "A")
                 update_charger_active_alert(state, status)
                 row.update({
                     "charger_status_voltage_v": f"{status['voltage_v']:.2f}",
@@ -783,6 +878,8 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
         state.id_counts[f"TX 0x{CHARGER_CMD_ID}"] += 1
         if cmd:
             state.charger_cmd = cmd
+            record_time_series_sample(state, now, "charger_voltage_v", cmd["voltage_v"], "V")
+            record_time_series_sample(state, now, "charger_current_a", cmd["current_a"], "A")
             row.update({
                 "value": cmd["text"],
                 "charger_cmd_voltage_v": f"{cmd['voltage_v']:.1f}",
@@ -865,6 +962,9 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
         except ValueError:
             value = raw_value
         state.latest_values[key] = (value, unit)
+        if key == "current_a":
+            record_current_sample(state, now, value)
+        record_time_series_sample(state, now, key, value, unit)
         update_numeric_active_alert(state, key, value)
         row.update({
             "parsed_type": "value" if row["parsed_type"] == "raw" else row["parsed_type"],
@@ -918,6 +1018,9 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
         except ValueError:
             value = raw_value
         state.latest_values[key] = (value, unit)
+        if key == "current_a":
+            record_current_sample(state, now, value)
+        record_time_series_sample(state, now, key, value, unit)
         update_numeric_active_alert(state, key, value)
         row.update({
             "parsed_type": "value",
@@ -1340,6 +1443,7 @@ class Dial(ttk.Frame):
         min_value: float,
         max_value: float,
         redline_start: Optional[float] = None,
+        red_ranges: Optional[list[tuple[float, float]]] = None,
         units: str = "",
         width: int = 300,
         height: int = 190,
@@ -1349,11 +1453,35 @@ class Dial(ttk.Frame):
         self.min_value = min_value
         self.max_value = max_value
         self.redline_start = redline_start
+        self.red_ranges = list(red_ranges or [])
         self.units = units
         self.width = width
         self.height = height
+        self._last_min: Optional[float] = None
+        self._last_max: Optional[float] = None
+        self._last_current: Optional[float] = None
+        self._last_current_label = "NOW"
         self.canvas = tk.Canvas(self, width=width, height=height, bg="#101214", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", self._on_canvas_resize)
+
+    def _on_canvas_resize(self, event: tk.Event) -> None:
+        self.width = max(1, int(event.width))
+        self.height = max(1, int(event.height))
+        self._draw_cached()
+
+    def set_canvas_size(self, width: int, height: int) -> bool:
+        width = max(140, int(width))
+        height = max(74, int(height))
+        old_width = int(float(self.canvas.cget("width")))
+        old_height = int(float(self.canvas.cget("height")))
+        if abs(width - old_width) < 2 and abs(height - old_height) < 2:
+            return False
+        self.width = width
+        self.height = height
+        self.canvas.configure(width=width, height=height)
+        self._draw_cached()
+        return True
 
     def _angle_for(self, value: float) -> float:
         v = max(self.min_value, min(self.max_value, value))
@@ -1364,49 +1492,101 @@ class Dial(ttk.Frame):
         a = self._angle_for(value)
         return cx + radius * math.cos(a), cy - radius * math.sin(a)
 
-    def draw(self, min_reading: Optional[float], max_reading: Optional[float]) -> None:
+    def draw(
+        self,
+        min_reading: Optional[float],
+        max_reading: Optional[float],
+        current_reading: Optional[float] = None,
+        current_label: str = "NOW",
+    ) -> None:
+        self._last_min = min_reading
+        self._last_max = max_reading
+        self._last_current = current_reading
+        self._last_current_label = current_label
+        self._draw_cached()
+
+    def _draw_cached(self) -> None:
         c = self.canvas
         c.delete("all")
-        w = self.width
-        h = self.height
-        cx = w / 2
-        cy = h * 0.78
-        r = min(w * 0.38, h * 0.58)
 
-        c.create_text(cx, 18, text=self.title, fill="#F2F2F2", font=("Segoe UI", 12, "bold"))
+        w = max(1, self.canvas.winfo_width() or self.width)
+        h = max(1, self.canvas.winfo_height() or self.height)
+        if h < 40 or w < 80:
+            return
+
+        compact = h < 130
+        title_size = 10 if compact else 12
+        tick_size = 7 if compact else 8
+        value_size = 8 if compact else 10
+        marker_text_size = 7 if compact else 8
+        arc_width = max(6, min(14, int(min(w, h) * 0.075)))
+        marker_line_width = max(2, int(arc_width * 0.35))
+
+        cx = w / 2
+        cy = h * (0.80 if compact else 0.78)
+        top_pad = 20 if compact else 26
+        bottom_pad = 18 if compact else 28
+        r = max(22.0, min(w * 0.38, (cy - top_pad), (h - bottom_pad) * 0.62))
+
+        c.create_text(cx, 12 if compact else 18, text=self.title, fill="#F2F2F2", font=("Segoe UI", title_size, "bold"))
 
         bbox = (cx - r, cy - r, cx + r, cy + r)
-        c.create_arc(bbox, start=-30, extent=240, style="arc", width=14, outline="#30363D")
+        c.create_arc(bbox, start=-30, extent=240, style="arc", width=arc_width, outline="#30363D")
 
+        red_ranges = list(self.red_ranges)
         if self.redline_start is not None:
-            red_start_angle = 210 - ((self.redline_start - self.min_value) / (self.max_value - self.min_value)) * 240
-            red_extent = ((self.max_value - self.redline_start) / (self.max_value - self.min_value)) * 240
-            c.create_arc(bbox, start=-30, extent=red_extent, style="arc", width=14, outline="#D62828")
+            red_ranges.append((self.redline_start, self.max_value))
+
+        def dial_angle_deg(value: float) -> float:
+            v = max(self.min_value, min(self.max_value, value))
+            ratio = (v - self.min_value) / (self.max_value - self.min_value)
+            return 210 - ratio * 240
+
+        for red_lo, red_hi in red_ranges:
+            lo = max(self.min_value, min(self.max_value, red_lo))
+            hi = max(self.min_value, min(self.max_value, red_hi))
+            if hi <= lo:
+                continue
+            start_angle = dial_angle_deg(hi)
+            extent = dial_angle_deg(lo) - start_angle
+            c.create_arc(bbox, start=start_angle, extent=extent, style="arc", width=arc_width, outline="#D62828")
 
         # Tick marks
         for i in range(6):
             value = self.min_value + i * (self.max_value - self.min_value) / 5
             x1, y1 = self._point(cx, cy, r - 8, value)
-            x2, y2 = self._point(cx, cy, r + 6, value)
-            c.create_line(x1, y1, x2, y2, fill="#AAB2BD", width=2)
-            xt, yt = self._point(cx, cy, r + 22, value)
-            c.create_text(xt, yt, text=f"{value:g}", fill="#C9D1D9", font=("Segoe UI", 8))
+            x2, y2 = self._point(cx, cy, r + 4, value)
+            c.create_line(x1, y1, x2, y2, fill="#AAB2BD", width=max(1, arc_width // 5))
+            if h >= 88:
+                xt, yt = self._point(cx, cy, r + (16 if compact else 22), value)
+                c.create_text(xt, yt, text=f"{value:g}", fill="#C9D1D9", font=("Segoe UI", tick_size))
 
-        def draw_marker(value: Optional[float], color: str, label: str) -> None:
+        def draw_marker(value: Optional[float], color: str, label: str, line_scale: float = 1.0) -> None:
             if value is None:
                 return
             x, y = self._point(cx, cy, r - 18, value)
-            c.create_line(cx, cy, x, y, fill=color, width=4, arrow=tk.LAST)
-            c.create_oval(x - 5, y - 5, x + 5, y + 5, fill=color, outline="white", width=1)
-            c.create_text(x, y - 18, text=label, fill=color, font=("Segoe UI", 8, "bold"))
+            c.create_line(cx, cy, x, y, fill=color, width=max(2, int(marker_line_width * line_scale)), arrow=tk.LAST)
+            dot_r = 4 if compact else 5
+            c.create_oval(x - dot_r, y - dot_r, x + dot_r, y + dot_r, fill=color, outline="white", width=1)
+            if h >= 110:
+                c.create_text(x, y - (13 if compact else 18), text=label, fill=color, font=("Segoe UI", marker_text_size, "bold"))
 
-        draw_marker(min_reading, "#58A6FF", "MIN")
-        draw_marker(max_reading, "#FF5C5C", "MAX")
-        c.create_oval(cx - 5, cy - 5, cx + 5, cy + 5, fill="#F2F2F2", outline="")
+        draw_marker(self._last_min, "#58A6FF", "MIN")
+        draw_marker(self._last_max, "#FF5C5C", "MAX")
+        draw_marker(self._last_current, "#FFD23F", self._last_current_label, 1.2)
+        center_r = 4 if compact else 5
+        c.create_oval(cx - center_r, cy - center_r, cx + center_r, cy + center_r, fill="#F2F2F2", outline="")
 
-        min_text = "NaN" if min_reading is None else f"{min_reading:.3g}{self.units}"
-        max_text = "NaN" if max_reading is None else f"{max_reading:.3g}{self.units}"
-        c.create_text(cx, h - 28, text=f"Min: {min_text}    Max: {max_text}", fill="#F2F2F2", font=("Segoe UI", 10, "bold"))
+        def fmt(value: Optional[float]) -> str:
+            return "NaN" if value is None else f"{value:.3g}{self.units}"
+
+        min_text = fmt(self._last_min)
+        max_text = fmt(self._last_max)
+        if self._last_current is None:
+            bottom_text = f"Min: {min_text}    Max: {max_text}"
+        else:
+            bottom_text = f"Now: {fmt(self._last_current)}    Min: {min_text}    Max: {max_text}"
+        c.create_text(cx, h - (10 if compact else 18), text=bottom_text, fill="#F2F2F2", font=("Segoe UI", value_size, "bold"))
 
 
 class ModuleMap(ttk.Frame):
@@ -1651,7 +1831,7 @@ class ModuleMap(ttk.Frame):
             color_value = sum(values_for_color) / len(values_for_color) if values_for_color else None
             fill = voltage_color(color_value)
             text_color = readable_text_color(fill)
-            border = marker_pair_color(min_item.get("board") if min_item else (max_item.get("board") if max_item else None))
+            border = voltage_color(color_value)
 
             has_orange = any(self.is_orange_voltage(item.get("value")) for item in (min_item, max_item) if item)
             has_fault = any(self.is_voltage_fault(item.get("value")) for item in (min_item, max_item) if item)
@@ -1830,8 +2010,8 @@ class ModuleMap(ttk.Frame):
 
             fill = voltage_color(value)
             text_color = readable_text_color(fill)
-            outline = board_color
-            outline_width = 2
+            outline = voltage_color(value)
+            outline_width = 3
 
             if cell == vmin_cell:
                 outline = "#FF5C5C"
@@ -1938,6 +2118,214 @@ class ModuleMap(ttk.Frame):
         c.create_text(12, 56, anchor="w", text=summary, fill="#F2F2F2", font=("Segoe UI", 8, "bold"))
 
 
+class GraphView(ttk.Frame):
+    def __init__(self, parent: tk.Widget) -> None:
+        super().__init__(parent)
+        self.time_window_var = tk.StringVar(value="60")
+        self.series_vars: dict[str, tk.BooleanVar] = {
+            key: tk.BooleanVar(value=key in DEFAULT_GRAPH_KEYS)
+            for key, _label, _unit, _color in GRAPH_SERIES
+        }
+
+        controls = ttk.Frame(self)
+        controls.pack(fill="x", pady=(0, 4))
+
+        ttk.Label(controls, text="Graph window:", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 4))
+        self.window_entry = ttk.Entry(controls, textvariable=self.time_window_var, width=8)
+        self.window_entry.pack(side="left", padx=(0, 4))
+        ttk.Label(controls, text="seconds").pack(side="left", padx=(0, 10))
+        ttk.Button(controls, text="Select all", command=self.select_all).pack(side="left", padx=(0, 4))
+        ttk.Button(controls, text="Clear", command=self.clear_all).pack(side="left", padx=(0, 10))
+
+        self.series_frame = ttk.Frame(self)
+        self.series_frame.pack(fill="x", pady=(0, 4))
+        self.build_series_checks(columns=4)
+
+        self.canvas = tk.Canvas(self, bg="#070707", highlightthickness=1, highlightbackground="#333333")
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", lambda _event: self._draw_cached())
+        self._last_samples: list[tuple[float, str, float, str]] = []
+        self._last_now = time.time()
+
+    def build_series_checks(self, columns: int = 4) -> None:
+        for child in self.series_frame.winfo_children():
+            child.destroy()
+        columns = max(1, columns)
+        for idx, (key, label, unit, color) in enumerate(GRAPH_SERIES):
+            r = idx // columns
+            c = idx % columns
+            item = ttk.Frame(self.series_frame)
+            item.grid(row=r, column=c, sticky="w", padx=(0, 10), pady=1)
+            swatch = tk.Canvas(item, width=12, height=12, bg="#0D1117", highlightthickness=0)
+            swatch.pack(side="left", padx=(0, 3))
+            swatch.create_rectangle(1, 1, 11, 11, fill=color, outline="#F2F2F2", width=1)
+            ttk.Checkbutton(
+                item,
+                text=f"{label} ({unit})",
+                variable=self.series_vars[key],
+                command=self._draw_cached,
+            ).pack(side="left")
+        for c in range(columns):
+            self.series_frame.columnconfigure(c, weight=1)
+
+    def select_all(self) -> None:
+        for var in self.series_vars.values():
+            var.set(True)
+        self._draw_cached()
+
+    def clear_all(self) -> None:
+        for var in self.series_vars.values():
+            var.set(False)
+        self._draw_cached()
+
+    def window_seconds(self) -> float:
+        text = self.time_window_var.get().strip()
+        try:
+            value = float(text)
+        except ValueError:
+            value = 60.0
+        return max(1.0, min(7200.0, value))
+
+    def draw_samples(self, samples: list[tuple[float, str, float, str]], now: Optional[float] = None) -> None:
+        self._last_samples = samples
+        self._last_now = time.time() if now is None else now
+        self._draw_cached()
+
+    def _draw_cached(self) -> None:
+        c = self.canvas
+        c.delete("all")
+        w = max(1, c.winfo_width())
+        h = max(1, c.winfo_height())
+        if w < 160 or h < 120:
+            return
+
+        window_s = self.window_seconds()
+        now = self._last_now
+        cutoff = now - window_s
+        selected_keys = [key for key, var in self.series_vars.items() if var.get()]
+        if not selected_keys:
+            c.create_text(w / 2, h / 2, text="Select one or more data channels to graph.", fill="#F2F2F2", font=("Segoe UI", 12, "bold"))
+            return
+
+        grouped: dict[str, dict[str, list[tuple[float, float]]]] = defaultdict(lambda: defaultdict(list))
+        for sample_time, key, value, unit in self._last_samples:
+            if sample_time < cutoff or key not in selected_keys:
+                continue
+            meta = GRAPH_SERIES_META.get(key, {})
+            graph_unit = str(meta.get("unit", unit or "value"))
+            grouped[graph_unit][key].append((sample_time, value))
+
+        if not grouped:
+            c.create_text(
+                w / 2,
+                h / 2,
+                text=f"No selected graph data in the last {window_s:g} seconds.",
+                fill="#F2F2F2",
+                font=("Segoe UI", 12, "bold"),
+            )
+            return
+
+        units = [unit for unit in ["V", "A", "C", "%", "kW", "value"] if unit in grouped]
+        units += [unit for unit in grouped if unit not in units]
+        graph_count = len(units)
+        top_pad = 10
+        gap = 16
+        graph_h = max(90, int((h - top_pad - gap * (graph_count - 1) - 10) / graph_count))
+        y = top_pad
+
+        for unit in units:
+            series_by_key = grouped[unit]
+            self.draw_unit_graph(c, 10, y, w - 20, graph_h, unit, series_by_key, cutoff, now)
+            y += graph_h + gap
+
+    def draw_unit_graph(
+        self,
+        c: tk.Canvas,
+        x: int,
+        y: int,
+        w: int,
+        h: int,
+        unit: str,
+        series_by_key: dict[str, list[tuple[float, float]]],
+        cutoff: float,
+        now: float,
+    ) -> None:
+        left_pad = 62
+        right_pad = 14
+        top_pad = 26
+        bottom_pad = 24
+        plot_left = x + left_pad
+        plot_right = x + w - right_pad
+        plot_top = y + top_pad
+        plot_bottom = y + h - bottom_pad
+        plot_w = max(1, plot_right - plot_left)
+        plot_h = max(1, plot_bottom - plot_top)
+
+        all_values = [value for values in series_by_key.values() for _t, value in values]
+        if not all_values:
+            return
+        y_min = min(all_values)
+        y_max = max(all_values)
+        if unit == "A":
+            # Keep the current graph visually comparable to the current gauge range.
+            y_min = min(y_min, CURRENT_DIAL_MIN_A)
+            y_max = max(y_max, CURRENT_DIAL_MAX_A)
+        if math.isclose(y_min, y_max):
+            pad = max(1.0, abs(y_min) * 0.05)
+            y_min -= pad
+            y_max += pad
+        else:
+            pad = (y_max - y_min) * 0.08
+            y_min -= pad
+            y_max += pad
+
+        c.create_rectangle(x, y, x + w, y + h, fill="#101214", outline="#30363D", width=1)
+        c.create_text(x + 8, y + 12, anchor="w", text=f"{unit} graph", fill="#F2F2F2", font=("Segoe UI", 10, "bold"))
+
+        # Grid and y-axis labels.
+        for i in range(5):
+            frac = i / 4
+            yy = plot_bottom - frac * plot_h
+            value = y_min + frac * (y_max - y_min)
+            c.create_line(plot_left, yy, plot_right, yy, fill="#27313A", width=1)
+            c.create_text(plot_left - 6, yy, anchor="e", text=f"{value:.3g}", fill="#C9D1D9", font=("Segoe UI", 8))
+        for i in range(5):
+            frac = i / 4
+            xx = plot_left + frac * plot_w
+            c.create_line(xx, plot_top, xx, plot_bottom, fill="#1B222A", width=1)
+
+        c.create_rectangle(plot_left, plot_top, plot_right, plot_bottom, outline="#8B949E", width=1)
+        c.create_text(plot_left, plot_bottom + 14, anchor="w", text=f"-{now - cutoff:.0f}s", fill="#C9D1D9", font=("Segoe UI", 8))
+        c.create_text(plot_right, plot_bottom + 14, anchor="e", text="now", fill="#C9D1D9", font=("Segoe UI", 8))
+
+        legend_x = plot_left + 4
+        legend_y = y + 12
+        for key, values in series_by_key.items():
+            meta = GRAPH_SERIES_META.get(key, {})
+            label = str(meta.get("label", key))
+            color = str(meta.get("color", "#F2F2F2"))
+            if not values:
+                continue
+
+            points: list[float] = []
+            for sample_time, value in values:
+                xx = plot_left + ((sample_time - cutoff) / max(0.001, now - cutoff)) * plot_w
+                yy = plot_bottom - ((value - y_min) / max(0.001, y_max - y_min)) * plot_h
+                points.extend([xx, yy])
+            if len(points) >= 4:
+                c.create_line(*points, fill=color, width=2, smooth=False)
+            elif len(points) == 2:
+                xx, yy = points
+                c.create_oval(xx - 3, yy - 3, xx + 3, yy + 3, fill=color, outline="white")
+
+            c.create_rectangle(legend_x, legend_y - 5, legend_x + 10, legend_y + 5, fill=color, outline="#F2F2F2")
+            c.create_text(legend_x + 14, legend_y, anchor="w", text=label, fill="#F2F2F2", font=("Segoe UI", 8, "bold"))
+            legend_x += 120
+            if legend_x > x + w - 110:
+                legend_x = plot_left + 4
+                legend_y += 14
+
+
 class BMSGuiApp:
     def __init__(self, root: tk.Tk, state: MonitorState, state_lock: threading.RLock, stop_event: threading.Event, left_image: Path, right_image: Path) -> None:
         self.root = root
@@ -1947,7 +2335,9 @@ class BMSGuiApp:
         self.status_queue: "queue.Queue[str]" = queue.Queue()
         self.selected_pair = tk.IntVar(value=1)
         self.overlay_filter = tk.StringVar(value="minmax")
+        self.view_mode = tk.StringVar(value="overlay")
         self.vars: dict[str, tk.StringVar] = {}
+        self._left_resize_job: Optional[str] = None
 
         root.title("EV4 BMS Serial GUI")
         root.geometry("1600x980")
@@ -1977,38 +2367,58 @@ class BMSGuiApp:
         return v
 
     def build_ui(self, left_image: Path, right_image: Path) -> None:
-        main = ttk.Frame(self.root)
-        main.pack(fill="both", expand=True, padx=8, pady=8)
-
-        # Three-column layout:
+        # Sash-resizable three-pane layout:
         #   left   = status/dials/BMS data
-        #   center = large stacked module image overlays
-        #   right  = narrow Active Alerts / Recent Events
-        main.columnconfigure(0, weight=0, minsize=390)
-        main.columnconfigure(1, weight=1)
-        main.columnconfigure(2, weight=0, minsize=300)
-        main.rowconfigure(0, weight=1)
+        #   center = image overlays or graph mode
+        #   right  = Active Alerts / Recent Events
+        main = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
+        main.pack(fill="both", expand=True, padx=8, pady=8)
+        self.main_paned = main
 
-        left_panel = ttk.Frame(main)
-        left_panel.grid(row=0, column=0, sticky="nswe", padx=(0, 8))
+        left_panel = ttk.Frame(main, width=410)
+        map_panel = ttk.Frame(main, width=860)
+        event_panel = ttk.Frame(main, width=300)
 
-        map_panel = ttk.Frame(main)
-        map_panel.grid(row=0, column=1, sticky="nswe", padx=(0, 8))
+        try:
+            main.add(left_panel, weight=0)
+            main.add(map_panel, weight=1)
+            main.add(event_panel, weight=0)
+        except tk.TclError:
+            main.add(left_panel)
+            main.add(map_panel)
+            main.add(event_panel)
+
+        self.left_panel = left_panel
+        self.map_panel = map_panel
+        self.event_panel = event_panel
+
         map_panel.columnconfigure(0, weight=1)
         map_panel.rowconfigure(2, weight=1)
 
-        event_panel = ttk.Frame(main)
-        event_panel.grid(row=0, column=2, sticky="nswe")
         event_panel.columnconfigure(0, weight=1)
         event_panel.rowconfigure(0, weight=1)
         event_panel.rowconfigure(1, weight=1)
 
         self.build_status_panel(left_panel)
-        self.voltage_dial = Dial(left_panel, "Cell Voltage Min/Max", 2.5, 4.2, units="V")
-        self.voltage_dial.pack(fill="x", pady=(8, 0))
 
-        self.temp_dial = Dial(left_panel, "Cell Temperature Min/Max", -20, 80, redline_start=60, units="C")
-        self.temp_dial.pack(fill="x", pady=(8, 0))
+        self.dial_area = ttk.Frame(left_panel)
+        self.dial_area.pack(fill="x", pady=(8, 0))
+        for col in range(3):
+            self.dial_area.columnconfigure(col, weight=1, uniform="gauges")
+
+        self.voltage_dial = Dial(self.dial_area, "Cell Voltage Min/Max", 2.5, 4.2, units="V")
+        self.temp_dial = Dial(self.dial_area, "Cell Temperature Min/Max", -20, 80, redline_start=60, units="C")
+        self.current_dial = Dial(
+            self.dial_area,
+            "Current / 60s Min-Max",
+            CURRENT_DIAL_MIN_A,
+            CURRENT_DIAL_MAX_A,
+            red_ranges=[(CURRENT_DIAL_MIN_A, -9.0), (240.0, CURRENT_DIAL_MAX_A)],
+            units="A",
+        )
+        self.resizable_dials = [self.voltage_dial, self.temp_dial, self.current_dial]
+        self._dial_layout_mode = ""
+        self.layout_dials("stack", left_panel.winfo_reqwidth(), 120)
 
         self.build_info_panel(left_panel, "BMS Values", [
             ("Pack Voltage", "pack_voltage_v"),
@@ -2023,13 +2433,17 @@ class BMSGuiApp:
             ("HV Sense Temp", "hv_sense_temp_c"),
             ("Hall ADC Voltage", "hall_adc_voltage_v"),
             ("Current Zero Voltage", "current_zero_voltage"),
-        ])
+        ], value_columns=2)
 
         self.build_charger_panel(left_panel)
         self.build_can_panel(left_panel)
+        left_panel.bind("<Configure>", self.request_left_panel_resize)
+        main.bind("<ButtonRelease-1>", lambda _event: (self.request_left_panel_resize(), self.request_map_resize()))
+        self.root.after_idle(self.resize_left_gauges_to_available_space)
 
         top = ttk.Frame(map_panel)
         top.grid(row=0, column=0, sticky="we")
+        top.columnconfigure(0, weight=1)
 
         controls = ttk.Frame(top)
         controls.grid(row=0, column=0, sticky="w")
@@ -2063,15 +2477,24 @@ class BMSGuiApp:
             command=self.force_redraw,
         ).pack(side="left", padx=(0, 8))
 
+        self.view_toggle = ttk.Button(controls, text="Graph Mode", command=self.toggle_view_mode)
+        self.view_toggle.pack(side="left", padx=(16, 0))
+
         self.legend = tk.Canvas(map_panel, height=54, bg="#0D1117", highlightthickness=0)
         self.legend.grid(row=1, column=0, sticky="we", pady=(4, 4))
+        self.legend.bind("<Configure>", lambda _event: self.draw_legend())
 
-        maps = ttk.Frame(map_panel)
-        maps.grid(row=2, column=0, sticky="nsew")
+        content = ttk.Frame(map_panel)
+        content.grid(row=2, column=0, sticky="nsew")
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+        self.content_frame = content
+
+        maps = ttk.Frame(content)
+        maps.grid(row=0, column=0, sticky="nsew")
         maps.columnconfigure(0, weight=1)
         maps.rowconfigure(0, weight=0)
         maps.rowconfigure(1, weight=0)
-        self.map_panel = map_panel
         self.maps_frame = maps
         self._map_resize_job: Optional[str] = None
 
@@ -2100,12 +2523,116 @@ class BMSGuiApp:
         )
         self.right_map.grid(row=1, column=0, sticky="n")
 
+        self.graph_view = GraphView(content)
+        self.graph_view.grid(row=0, column=0, sticky="nsew")
+        self.graph_view.grid_remove()
+
         map_panel.bind("<Configure>", self.request_map_resize)
         maps.bind("<Configure>", self.request_map_resize)
+        content.bind("<Configure>", self.request_map_resize)
         self.root.after_idle(self.resize_maps_to_available_space)
 
         self.alert_text = self.make_text_box(event_panel, "ACTIVE ALERTS", 0, height=17, width=36)
         self.event_text = self.make_text_box(event_panel, "RECENT EVENTS", 1, height=17, width=36)
+
+
+    def layout_dials(self, mode: str, panel_w: int, dial_h: int) -> None:
+        """Reflow the three gauge widgets based on available side-panel space."""
+        if not hasattr(self, "dial_area"):
+            return
+
+        for child in getattr(self, "resizable_dials", []):
+            child.grid_forget()
+
+        for r in range(3):
+            self.dial_area.rowconfigure(r, weight=0)
+        for c in range(3):
+            self.dial_area.columnconfigure(c, weight=1, uniform="gauges")
+
+        panel_w = max(160, int(panel_w))
+        dial_h = max(74, int(dial_h))
+
+        if mode == "row3":
+            gauge_w = max(120, int((panel_w - 16) / 3))
+            for idx, dial in enumerate(self.resizable_dials):
+                dial.grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 4, 0), pady=0)
+                dial.set_canvas_size(gauge_w, dial_h)
+        elif mode == "row2_current_below":
+            half_w = max(140, int((panel_w - 12) / 2))
+            full_w = max(180, panel_w - 8)
+            self.voltage_dial.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 4))
+            self.temp_dial.grid(row=0, column=1, sticky="nsew", padx=(4, 0), pady=(0, 4))
+            self.current_dial.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(4, 0))
+            self.voltage_dial.set_canvas_size(half_w, dial_h)
+            self.temp_dial.set_canvas_size(half_w, dial_h)
+            self.current_dial.set_canvas_size(full_w, dial_h)
+        else:
+            full_w = max(180, panel_w - 8)
+            for idx, dial in enumerate(self.resizable_dials):
+                dial.grid(row=idx, column=0, columnspan=3, sticky="nsew", pady=(0 if idx == 0 else 8, 0))
+                dial.set_canvas_size(full_w, dial_h)
+
+        self._dial_layout_mode = mode
+
+    def toggle_view_mode(self) -> None:
+        if self.view_mode.get() == "overlay":
+            self.view_mode.set("graph")
+            self.maps_frame.grid_remove()
+            self.graph_view.grid()
+            self.view_toggle.configure(text="Image Overlay")
+            self.legend.grid_remove()
+        else:
+            self.view_mode.set("overlay")
+            self.graph_view.grid_remove()
+            self.maps_frame.grid()
+            self.legend.grid()
+            self.view_toggle.configure(text="Graph Mode")
+            self.request_map_resize()
+        self.force_redraw()
+
+    def request_left_panel_resize(self, event: Optional[tk.Event] = None) -> None:
+        """Debounce gauge resizing while the left panel/window is changing."""
+        if getattr(self, "_left_resize_job", None) is not None:
+            return
+        self._left_resize_job = self.root.after(50, self.resize_left_gauges_to_available_space)
+
+    def resize_left_gauges_to_available_space(self) -> None:
+        """Shrink/expand and reflow the gauges so the left-side panels fit vertically."""
+        self._left_resize_job = None
+
+        if not hasattr(self, "left_panel") or not hasattr(self, "resizable_dials"):
+            return
+
+        panel_h = self.left_panel.winfo_height()
+        panel_w = self.left_panel.winfo_width()
+        if panel_h < 120 or panel_w < 120:
+            return
+
+        fixed_h = 0
+        for child in self.left_panel.winfo_children():
+            if child is getattr(self, "dial_area", None):
+                continue
+            fixed_h += max(child.winfo_height(), child.winfo_reqheight())
+
+        reserved_padding = 44
+        available_for_dials = max(70, panel_h - fixed_h - reserved_padding)
+
+        # Preferred layout order:
+        #   1) all three gauges on one row if the side panel is wide enough
+        #   2) voltage/temp on one row with current below
+        #   3) stacked gauges, matching the prior layout
+        if panel_w >= 540 and available_for_dials >= 82:
+            mode = "row3"
+            dial_h = max(74, min(150, available_for_dials - 4))
+        elif panel_w >= 330 and available_for_dials >= 160:
+            mode = "row2_current_below"
+            dial_h = max(76, min(145, int((available_for_dials - 10) / 2)))
+        else:
+            mode = "stack"
+            dial_h = max(74, min(190, int((available_for_dials - 16) / 3)))
+
+        self.layout_dials(mode, panel_w, dial_h)
+        self.root.after_idle(self.force_redraw)
 
     def request_map_resize(self, event: Optional[tk.Event] = None) -> None:
         """Debounce center-map resizing while the window/layout is changing."""
@@ -2124,13 +2651,16 @@ class BMSGuiApp:
 
         if not hasattr(self, "maps_frame"):
             return
+        if hasattr(self, "view_mode") and self.view_mode.get() == "graph":
+            return
 
-        # Width available between the left status panel and right alert panel.
-        available_width = max(0, self.maps_frame.winfo_width() - 4)
+        # Width available inside the center panel.
+        container = getattr(self, "content_frame", self.maps_frame)
+        available_width = max(0, container.winfo_width() - 4)
 
         # Height available below the controls/legend.  Use it too so both stacked
         # maps stay visible instead of forcing a horizontal/vertical overflow.
-        available_height = max(0, self.maps_frame.winfo_height() - 8)
+        available_height = max(0, container.winfo_height() - 8)
 
         if available_width < 100:
             return
@@ -2197,14 +2727,12 @@ class BMSGuiApp:
             ("Serial", "serial_status"),
             ("Cell V", "cell_voltage_status"),
             ("Mode", "mode"),
-            ("Runtime", "runtime"),
-            ("Lines", "lines"),
-            ("Rate", "rate"),
+            ("Run/Lines/Rate", "runtime_line_rate"),
             ("Log", "log"),
         ]
 
         for r, (label, key) in enumerate(fields):
-            ttk.Label(frame, text=label + ":", width=10).grid(row=r, column=0, sticky="w", padx=4, pady=2)
+            ttk.Label(frame, text=label + ":", width=14).grid(row=r, column=0, sticky="w", padx=4, pady=2)
 
             if key == "serial_status":
                 serial_frame = ttk.Frame(frame)
@@ -2236,20 +2764,62 @@ class BMSGuiApp:
 
                 ttk.Label(voltage_frame, textvariable=self.make_var(key), wraplength=245).pack(side="left")
 
+            elif key == "runtime_line_rate":
+                compact_frame = ttk.Frame(frame)
+                compact_frame.grid(row=r, column=1, sticky="w", padx=4, pady=2)
+
+                ttk.Label(compact_frame, text="Runtime ").pack(side="left")
+                ttk.Label(compact_frame, textvariable=self.make_var("runtime"), width=8).pack(side="left", padx=(0, 8))
+                ttk.Label(compact_frame, text="Lines ").pack(side="left")
+                ttk.Label(compact_frame, textvariable=self.make_var("lines"), width=7).pack(side="left", padx=(0, 8))
+                ttk.Label(compact_frame, text="Rate ").pack(side="left")
+                ttk.Label(compact_frame, textvariable=self.make_var("rate"), width=12).pack(side="left")
+
             else:
                 ttk.Label(frame, textvariable=self.make_var(key), wraplength=270).grid(row=r, column=1, sticky="w", padx=4, pady=2)
 
-    def build_info_panel(self, parent: tk.Widget, title: str, fields: list[tuple[str, str]]) -> None:
+    def build_info_panel(
+        self,
+        parent: tk.Widget,
+        title: str,
+        fields: list[tuple[str, str]],
+        value_columns: int = 1,
+    ) -> None:
+        """Build a compact value panel with one or more label/value columns."""
         frame = ttk.LabelFrame(parent, text=title)
         frame.pack(fill="x", pady=(8, 0))
-        for r, (label, key) in enumerate(fields):
-            ttk.Label(frame, text=label + ":", width=19).grid(row=r, column=0, sticky="w", padx=4, pady=2)
-            ttk.Label(frame, textvariable=self.make_var(key), width=16).grid(row=r, column=1, sticky="e", padx=4, pady=2)
+
+        value_columns = max(1, value_columns)
+        rows_per_column = max(1, math.ceil(len(fields) / value_columns))
+
+        for col in range(value_columns):
+            base_col = col * 2
+            frame.columnconfigure(base_col, weight=0)
+            frame.columnconfigure(base_col + 1, weight=1)
+
+        for idx, (label, key) in enumerate(fields):
+            block_col = idx // rows_per_column
+            row = idx % rows_per_column
+            base_col = block_col * 2
+            value_pad = (4, 12) if block_col < value_columns - 1 else 4
+
+            ttk.Label(frame, text=label + ":", width=17).grid(
+                row=row,
+                column=base_col,
+                sticky="w",
+                padx=(4, 2),
+                pady=2,
+            )
+            ttk.Label(frame, textvariable=self.make_var(key), width=13, wraplength=115).grid(
+                row=row,
+                column=base_col + 1,
+                sticky="w",
+                padx=value_pad,
+                pady=2,
+            )
 
     def build_charger_panel(self, parent: tk.Widget) -> None:
-        frame = ttk.LabelFrame(parent, text="Charger")
-        frame.pack(fill="x", pady=(8, 0))
-        fields = [
+        self.build_info_panel(parent, "Charger", [
             ("Command", "charger_cmd_text"),
             ("Request Voltage", "charger_cmd_voltage"),
             ("Request Current", "charger_cmd_current"),
@@ -2258,24 +2828,37 @@ class BMSGuiApp:
             ("Status Current", "charger_status_current"),
             ("Status Byte", "charger_status_byte"),
             ("Faults", "charger_status_faults"),
-        ]
-        for r, (label, key) in enumerate(fields):
-            ttk.Label(frame, text=label + ":", width=17).grid(row=r, column=0, sticky="w", padx=4, pady=2)
-            ttk.Label(frame, textvariable=self.make_var(key), wraplength=230).grid(row=r, column=1, sticky="w", padx=4, pady=2)
+        ], value_columns=2)
 
     def build_can_panel(self, parent: tk.Widget) -> None:
         frame = ttk.LabelFrame(parent, text="CAN / Serial")
         frame.pack(fill="x", pady=(8, 0))
-        fields = [
-            ("TX Frames", "tx_count"),
-            ("Last TX", "last_tx"),
-            ("RX Frames", "rx_count"),
-            ("Last RX", "last_rx"),
-            ("ID Counts", "id_counts"),
+
+        # Split CAN activity into TX and RX columns so the panel stays compact
+        # and the two directions can be compared at a glance.
+        frame.columnconfigure(0, weight=0)
+        frame.columnconfigure(1, weight=1)
+        frame.columnconfigure(2, weight=0)
+        frame.columnconfigure(3, weight=1)
+
+        ttk.Label(frame, text="TX", font=("Segoe UI", 9, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=4, pady=(2, 4)
+        )
+        ttk.Label(frame, text="RX", font=("Segoe UI", 9, "bold")).grid(
+            row=0, column=2, columnspan=2, sticky="w", padx=(14, 4), pady=(2, 4)
+        )
+
+        rows = [
+            ("Frames", "tx_count", "Frames", "rx_count"),
+            ("Last", "last_tx", "Last", "last_rx"),
+            ("IDs", "tx_id_counts", "IDs", "rx_id_counts"),
         ]
-        for r, (label, key) in enumerate(fields):
-            ttk.Label(frame, text=label + ":", width=11).grid(row=r, column=0, sticky="w", padx=4, pady=2)
-            ttk.Label(frame, textvariable=self.make_var(key), wraplength=260).grid(row=r, column=1, sticky="w", padx=4, pady=2)
+
+        for r, (tx_label, tx_key, rx_label, rx_key) in enumerate(rows, start=1):
+            ttk.Label(frame, text=tx_label + ":", width=7).grid(row=r, column=0, sticky="w", padx=4, pady=2)
+            ttk.Label(frame, textvariable=self.make_var(tx_key), wraplength=120).grid(row=r, column=1, sticky="w", padx=(0, 8), pady=2)
+            ttk.Label(frame, text=rx_label + ":", width=7).grid(row=r, column=2, sticky="w", padx=(14, 2), pady=2)
+            ttk.Label(frame, textvariable=self.make_var(rx_key), wraplength=120).grid(row=r, column=3, sticky="w", padx=(0, 4), pady=2)
 
     def update_serial_indicator(self, serial_status: str, last_line_time: Optional[float]) -> None:
         """
@@ -2522,47 +3105,63 @@ class BMSGuiApp:
         return out
 
     def draw_legend(self) -> None:
+        if not hasattr(self, "legend"):
+            return
         c = self.legend
         c.delete("all")
 
+        width = max(260, c.winfo_width() or int(float(c.cget("width") or 600)))
         x = 8
-        y1 = 13
-        y2 = 38
+        y = 14
+        row_h = 24
+
+        def wrap(item_w: int) -> None:
+            nonlocal x, y
+            if x > 8 and x + item_w > width - 8:
+                x = 8
+                y += row_h
 
         for pair in range(1, 6):
             color = PAIR_COLORS[pair]
             b1 = pair * 2 - 1
             b2 = pair * 2
-            c.create_rectangle(x, y1 - 8, x + 18, y1 + 10, fill=color, outline="#FFFFFF", width=1)
+            item_w = 135
+            wrap(item_w)
+            c.create_rectangle(x, y - 8, x + 18, y + 10, fill=color, outline="#FFFFFF", width=1)
             c.create_text(
                 x + 28,
-                y1 + 1,
+                y + 1,
                 anchor="w",
                 text=f"Boards {b1}/{b2}",
                 fill="#F2F2F2",
                 font=("Segoe UI", 9, "bold"),
             )
-            x += 150
+            x += item_w
 
-        # Two-line legend so the voltage text does not get clipped on narrower windows.
-        legend_x = x + 10
-        c.create_oval(legend_x, y1 - 9, legend_x + 18, y1 + 9, fill=temp_color(25), outline="#F2F2F2", width=2)
-        c.create_text(
-            legend_x + 28,
-            y1,
-            anchor="w",
-            text="Temp: RGB green→yellow→red at 60C+    -55C ignored",
-            fill="#F2F2F2",
-            font=("Segoe UI", 9, "bold"),
-        )
-        c.create_text(
-            legend_x + 28,
-            y2,
-            anchor="w",
-            text="Voltage: purple 2.5V → blue 4.2V    Min/Max = all boards / every location",
-            fill="#F2F2F2",
-            font=("Segoe UI", 9, "bold"),
-        )
+        temp_text = "Temp: RGB green→yellow→red at 60C+    -55C ignored"
+        voltage_text = "Voltage fill/border: purple 2.5V → blue 4.2V    Min/Max = all boards / every location"
+
+        for kind, text in (("temp", temp_text), ("voltage", voltage_text)):
+            item_w = min(width - 16, 520 if kind == "temp" else 650)
+            wrap(item_w)
+            if kind == "temp":
+                c.create_oval(x, y - 9, x + 18, y + 9, fill=temp_color(25), outline="#F2F2F2", width=2)
+            else:
+                c.create_rectangle(x, y - 8, x + 18, y + 10, fill=voltage_color(3.4), outline=voltage_color(3.4), width=2)
+            c.create_text(
+                x + 28,
+                y,
+                anchor="w",
+                text=text,
+                fill="#F2F2F2",
+                font=("Segoe UI", 9, "bold"),
+                width=max(160, width - x - 40),
+            )
+            x += item_w
+
+        desired_h = max(54, y + row_h)
+        if int(float(c.cget("height"))) != desired_h:
+            c.configure(height=desired_h)
 
     def update_gui(self) -> None:
         with self.state_lock:
@@ -2623,10 +3222,28 @@ class BMSGuiApp:
             self.vars["rx_count"].set(str(state.rx_count))
             self.vars["last_tx"].set(age_text(state.last_tx_time, now))
             self.vars["last_rx"].set(age_text(state.last_rx_time, now))
-            count_items = [f"{k}:{v}" for k, v in sorted(state.id_counts.items())[:8]]
-            self.vars["id_counts"].set("   ".join(count_items) if count_items else "NaN")
+
+            tx_count_items = [f"{k[3:]}:{v}" for k, v in sorted(state.id_counts.items()) if k.startswith("TX ")]
+            rx_count_items = [f"{k[3:]}:{v}" for k, v in sorted(state.id_counts.items()) if k.startswith("RX ")]
+            self.vars["tx_id_counts"].set("   ".join(tx_count_items[:4]) if tx_count_items else "NaN")
+            self.vars["rx_id_counts"].set("   ".join(rx_count_items[:4]) if rx_count_items else "NaN")
+
+            if "id_counts" in self.vars:
+                count_items = [f"{k}:{v}" for k, v in sorted(state.id_counts.items())[:8]]
+                self.vars["id_counts"].set("   ".join(count_items) if count_items else "NaN")
 
             allboard_ranges = self.get_allboard_ranges(state)
+            computed_pack_voltage = calculated_pack_voltage(state)
+            if computed_pack_voltage is not None:
+                record_time_series_sample(state, now, "pack_voltage_v", computed_pack_voltage, "V")
+            if allboard_ranges["vmin"]:
+                record_time_series_sample(state, now, "min_cell_voltage_v", allboard_ranges["vmin"]["value"], "V")
+            if allboard_ranges["vmax"]:
+                record_time_series_sample(state, now, "max_cell_voltage_v", allboard_ranges["vmax"]["value"], "V")
+            if allboard_ranges["tmin"]:
+                record_time_series_sample(state, now, "min_cell_temp_c", allboard_ranges["tmin"]["value"], "C")
+            if allboard_ranges["tmax"]:
+                record_time_series_sample(state, now, "max_cell_temp_c", allboard_ranges["tmax"]["value"], "C")
             serial_status_for_indicator = state.serial_status
             last_line_time_for_indicator = state.last_serial_line_time
             last_voltage_time_for_indicator = state.last_cell_voltage_update_time
@@ -2641,6 +3258,7 @@ class BMSGuiApp:
             max_v = allboard_ranges["vmax"]["value"] if allboard_ranges["vmax"] else get_latest_float(state, "max_cell_voltage_v")
             min_t = allboard_ranges["tmin"]["value"] if allboard_ranges["tmin"] else get_latest_float(state, "min_cell_temp_c")
             max_t = allboard_ranges["tmax"]["value"] if allboard_ranges["tmax"] else get_latest_float(state, "max_cell_temp_c")
+            current_min, current_max, current_now = recent_current_minmax(state, now)
             alerts = [text for _key, text in sorted(state.active_alerts.items())][:ACTIVE_ALERT_LINES]
             while len(alerts) < ACTIVE_ALERT_LINES:
                 alerts.append("")
@@ -2659,6 +3277,7 @@ class BMSGuiApp:
             left_temps = self.get_board_temp_sensors(state, odd_board)
             right_temps = self.get_board_temp_sensors(state, even_board)
             overlay_filter = self.overlay_filter.get()
+            time_series_samples = list(state.time_series)
 
         flash_on = (int(time.time() / FLASH_PERIOD_S) % 2) == 0
         self.apply_alarm_background(allboard_ranges)
@@ -2667,9 +3286,13 @@ class BMSGuiApp:
 
         self.voltage_dial.draw(min_v, max_v)
         self.temp_dial.draw(min_t, max_t)
-        self.draw_legend()
-        self.left_map.draw(pair_label, board_color, left_voltages, left_temps, overlay_filter, allboard_ranges, flash_on)
-        self.right_map.draw(pair_label, board_color, right_voltages, right_temps, overlay_filter, allboard_ranges, flash_on)
+        self.current_dial.draw(current_min, current_max, current_now, "NOW")
+        if self.view_mode.get() == "graph":
+            self.graph_view.draw_samples(time_series_samples, now)
+        else:
+            self.draw_legend()
+            self.left_map.draw(pair_label, board_color, left_voltages, left_temps, overlay_filter, allboard_ranges, flash_on)
+            self.right_map.draw(pair_label, board_color, right_voltages, right_temps, overlay_filter, allboard_ranges, flash_on)
 
         self.set_text_box(self.alert_text, [f"{i:02d}: {a}" for i, a in enumerate(alerts, start=1)])
         self.set_text_box(self.event_text, [f"{i:02d}: {e}" for i, e in enumerate(events, start=1)])
