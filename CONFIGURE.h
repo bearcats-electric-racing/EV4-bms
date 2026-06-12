@@ -31,9 +31,9 @@ uint32_t CHG_TX_ID = 0x18FF50E5;    //CAN Message ID of messages sent from charg
 
 // Charging parameters
 const uint16_t CHG_voltage = 588;
-const uint16_t CHG_current1 = 1; // up to 80% SOC
+const uint16_t CHG_current1 = 3; // up to 80% SOC
 const uint16_t CHG_current2 = 2; // 80% to 90% SOC
-const uint16_t CHG_current3 = 2; // 90% to 100% SOC
+const uint16_t CHG_current3 = 1; // 90% to 100% SOC
 
 //balancing parameters
 const float balance_threshold = 3.0;       // will not balance cells below this threshold (V)

@@ -13,14 +13,15 @@ Install:
   python -m pip install pyserial pillow
 
 Run:
-  python tools\bms_serial_gui.py --auto --baud 9600
-  python bms_serial_gui.py --port COM7 --baud 9600
+  python tools\bms_serial_gui.py --auto --baud 115200
+  python bms_serial_gui.py --port COM7 --baud 115200
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import math
 import os
 import queue
@@ -71,7 +72,18 @@ RX_RE = re.compile(
 
 BMS_RX_ID_RE = re.compile(r"^ID:\s*([0-9A-Fa-f]+)\s+Data:\s*$")
 HEX_BYTE_LINE_RE = re.compile(r"^\s*([0-9A-Fa-f]{1,2}\s*){1,8}\s*$")
-CHARGER_CAN_MESSAGE_RE = re.compile(r"^Charger CAN Message:\s*([0-9A-Fa-f ]+)")
+# Firmware has used both "Car CAN Message" and "BMS_Car CAN Message"
+# prefixes. Accept both so the GUI TX frame count increments for the
+# actual transmitted BMS/car CAN payload line instead of leaving it as raw.
+CHARGER_CAN_MESSAGE_RE = re.compile(r"^(?:BMS_)?Charger CAN Message:\s*([0-9A-Fa-f ]+)")
+CAR_CAN_MESSAGE_RE = re.compile(r"^(?:BMS_)?Car CAN Message:\s*([0-9A-Fa-f ]+)")
+SERIAL_COMMAND_RE = re.compile(r"^Serial command received:\s*(.+?)\s*$", re.IGNORECASE)
+FILE_SIZE_RE = re.compile(r"^(.+?)\s+(\d+)\s+bytes\s*$", re.IGNORECASE)
+DISCHARGE_CELL_RE = re.compile(
+    r"^Board:\s*(\d+)\s+Cell:\s*(\d+)\s+Volt:\s*([-+]?\d+(?:\.\d+)?)\s*$",
+    re.IGNORECASE,
+)
+LABEL_VALUE_UNIT_RE = re.compile(r"^([A-Za-z][A-Za-z0-9 _/().%-]*?):\s*([-+]?\d+(?:\.\d+)?)\s*([A-Za-z%]+)?\s*$")
 PCB_TEMP_RE = re.compile(
     r"^(VI|HV)\s+PCB\s+Temp:\s*"
     r"(?:(INVALID)|([-+]?\d+(?:\.\d+)?)\s*C"
@@ -122,8 +134,24 @@ KEY_ALIASES = {
     "a voltage": ("adc_a_voltage_v", "V"),
     "b voltage": ("adc_b_voltage_v", "V"),
     "hall effect adc voltage": ("hall_adc_voltage_v", "V"),
+    "raw current": ("raw_current_a", "A"),
+    "current offset": ("current_offset_a", "A"),
+    "current offset calibration voltage": ("current_offset_calibration_voltage_v", "V"),
+    "current offset raw current": ("current_offset_raw_current_a", "A"),
+    "current offset calibrated": ("current_offset_a", "A"),
     "current zero voltage": ("current_zero_voltage", "V"),
     "current zero voltage calibrated": ("current_zero_voltage_calibrated", "V"),
+    "current zero calibration failed. adc voltage": ("current_zero_calibration_failed_adc_voltage_v", "V"),
+    "start time": ("bms_start_time_ms", "ms"),
+    "temp": ("spi_temp_raw", "raw"),
+    "adc_a": ("adc_a_raw", "raw"),
+    "adc_b": ("adc_b_raw", "raw"),
+    "a voltage": ("adc_a_voltage_v", "V"),
+    "b voltage": ("adc_b_voltage_v", "V"),
+    "memory usage": ("sd_memory_usage_percent", "%"),
+    "min cell voltage": ("min_cell_voltage_v", "V"),
+    "max cell voltage": ("max_cell_voltage_v", "V"),
+    "die temp": ("die_temp_c", "C"),
 }
 
 MODE_LINES = {
@@ -146,6 +174,43 @@ FAULT_KEYWORDS = [
     "failed",
 ]
 
+# Firmware one-line status outputs that are useful events even when they do not
+# contain a numeric value.  Routing them here keeps the CSV parser from leaving
+# important known .ino outputs as generic raw rows.
+KNOWN_EVENT_LINES = {
+    "End of Setup Loop",
+    "New volt",
+    "New Temp",
+    "Send CAN",
+    "Debug command accepted",
+    "Charger Error",
+    "Charger Fault",
+    "ADC_initialization ERROR",
+    "SD card initialization failed!",
+    "SD card over 90% full",
+    "Initializing state of charge to 100%",
+    "state.txt initialized.",
+    "ADBMS6830B ADC TImeout Error",
+    "Open Voltage Sense Lead!",
+    "Open voltage sense lead detected",
+    "invalid voltage",
+    "Open fusible link detected - max voltage differential exceeded",
+    "Charger E-Stop Active",
+    "Failed to send charger CAN message",
+    "Charger CAN message sent",
+    "Failed to send car CAN message",
+    "Car CAN message sent",
+    "Clearing faults",
+    "No Stored Faults",
+    "Cells to be discharged",
+    "die_temps",
+    "voltage flags",
+    "Callback called",
+    "Wakeup Sleep",
+    "done",
+    "serial dump done",
+}
+
 SUPPRESS_RECENT_EVENT_TYPES = {
     "can_tx",
     "can_rx",
@@ -162,7 +227,7 @@ RECENT_EVENT_LINES = 12
 EXPECTED_PACK_VOLTAGE_BOARDS = tuple(range(1, 11))
 CELLS_PER_BOARD_FOR_PACK_VOLTAGE = 14
 
-GUI_BG_NORMAL = "#0D1117"
+GUI_BG_NORMAL = "#2B2B2B"
 GUI_BG_FAULT = "#4A1010"
 GUI_BG_ORANGE = "#5A3300"
 CELL_VOLTAGE_MIN_FAULT = 2.50
@@ -186,7 +251,11 @@ SERIAL_STALE_DATA_RECONNECT_S = 3.0
 SERIAL_BAD_PORT_COOLDOWN_S = 2.0
 SERIAL_NO_DATA_PORT_COOLDOWN_S = 6.0
 CELL_VOLTAGE_ACTIVITY_FLASH_S = 0.60
+CELL_TEMP_ACTIVITY_FLASH_S = 0.60
+CURRENT_ACTIVITY_FLASH_S = 0.60
 CELL_VOLTAGE_REFRESH_WINDOW_SAMPLES = 50
+CELL_TEMP_REFRESH_WINDOW_SAMPLES = 50
+CURRENT_REFRESH_WINDOW_SAMPLES = 50
 CURRENT_HISTORY_WINDOW_S = 60.0
 CURRENT_HISTORY_MAX_SAMPLES = 10000
 CURRENT_DIAL_MIN_A = -36.0
@@ -359,11 +428,24 @@ class MonitorState:
     board_voltages: dict[int, list[float]] = field(default_factory=dict)
     board_temps: dict[int, list[float]] = field(default_factory=dict)
     log_path: Optional[Path] = None
+    log_status: str = "Log file not opened yet"
+    last_closed_log_path: Optional[Path] = None
+    log_rollover_requested: bool = False
+    log_rollover_in_progress: bool = False
+    log_rollover_reason: str = ""
     serial_status: str = "disconnected"
     last_serial_line_time: Optional[float] = None
     last_cell_voltage_update_time: Optional[float] = None
     cell_voltage_refresh_intervals_ms: deque[float] = field(
         default_factory=lambda: deque(maxlen=CELL_VOLTAGE_REFRESH_WINDOW_SAMPLES)
+    )
+    last_cell_temp_update_time: Optional[float] = None
+    cell_temp_refresh_intervals_ms: deque[float] = field(
+        default_factory=lambda: deque(maxlen=CELL_TEMP_REFRESH_WINDOW_SAMPLES)
+    )
+    last_current_update_time: Optional[float] = None
+    current_refresh_intervals_ms: deque[float] = field(
+        default_factory=lambda: deque(maxlen=CURRENT_REFRESH_WINDOW_SAMPLES)
     )
     current_samples: deque[tuple[float, float]] = field(
         default_factory=lambda: deque(maxlen=CURRENT_HISTORY_MAX_SAMPLES)
@@ -552,6 +634,15 @@ def record_current_sample(state: MonitorState, now: float, value: Any) -> None:
         return
     if math.isnan(current_a):
         return
+
+    # Used by the Status panel's current activity indicator.
+    # The rolling refresh time is measured between parsed calculated-current rows.
+    if state.last_current_update_time is not None:
+        dt_ms = (now - state.last_current_update_time) * 1000.0
+        if 0.0 < dt_ms < 60000.0:
+            state.current_refresh_intervals_ms.append(dt_ms)
+
+    state.last_current_update_time = now
     state.current_samples.append((now, current_a))
 
 
@@ -695,6 +786,47 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
         row["parsed_type"] = "mode"
         row["key"] = "mode"
         row["value"] = state.mode
+        important = True
+
+    if stripped in KNOWN_EVENT_LINES:
+        row["parsed_type"] = "event"
+        row["key"] = "event"
+        row["value"] = stripped
+        important = True
+
+    m = SERIAL_COMMAND_RE.match(stripped)
+    if m:
+        row.update({
+            "parsed_type": "serial_command",
+            "key": "serial_command",
+            "value": m.group(1).strip(),
+        })
+        important = True
+
+    m = FILE_SIZE_RE.match(stripped)
+    if m and row["parsed_type"] == "raw":
+        row.update({
+            "parsed_type": "sd_file",
+            "key": "sd_file",
+            "value": m.group(1).strip(),
+            "unit": "bytes",
+        })
+        try:
+            row["array_values"] = str(int(m.group(2)))
+        except ValueError:
+            row["array_values"] = m.group(2)
+        important = True
+
+    m = DISCHARGE_CELL_RE.match(stripped)
+    if m:
+        row.update({
+            "parsed_type": "cell_discharge_candidate",
+            "key": "cell_discharge_candidate",
+            "board": int(m.group(1)),
+            "value": float(m.group(3)),
+            "unit": "V",
+        })
+        row["array_values"] = f"cell {int(m.group(2))}"
         important = True
 
     for word in FAULT_KEYWORDS:
@@ -889,6 +1021,24 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
             })
         important = True
 
+    m = CAR_CAN_MESSAGE_RE.match(stripped)
+    if m:
+        data = parse_hex_bytes(m.group(1))
+        row.update({
+            "parsed_type": "car_can_message",
+            "can_direction": "TX",
+            "can_id": f"0x{BMS_TX_ID}",
+            "can_ext": "0",
+            "can_len": len(data),
+            "can_data_hex": hex_bytes(data),
+            "key": "car_can_message",
+            "value": f"{len(data)} bytes",
+        })
+        state.tx_count += 1
+        state.last_tx_time = now
+        state.id_counts[f"TX 0x{BMS_TX_ID}"] += 1
+        important = True
+
     m = DECODED_CHARGER_RE.search(stripped)
     if m:
         status_byte = int(m.group(3), 16)
@@ -942,6 +1092,15 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
             })
         else:
             state.board_temps[board] = values[:10]
+
+            # Used by the Status panel's cell-temperature activity indicator.
+            # The rolling refresh time is measured between received board-temperature rows.
+            if state.last_cell_temp_update_time is not None:
+                dt_ms = (now - state.last_cell_temp_update_time) * 1000.0
+                if 0.0 < dt_ms < 60000.0:
+                    state.cell_temp_refresh_intervals_ms.append(dt_ms)
+
+            state.last_cell_temp_update_time = now
             row.update({
                 "parsed_type": "board_temperatures",
                 "key": "board_temperatures",
@@ -953,10 +1112,13 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
         state.pending_array_board = None
         important = True
 
-    m = LABEL_VALUE_RE.match(stripped)
+    m = LABEL_VALUE_UNIT_RE.match(stripped)
     if m:
         label, raw_value = m.group(1), m.group(2)
+        raw_unit = m.group(3) or ""
         key, unit = normalize_label(label)
+        if not unit and raw_unit:
+            unit = raw_unit
         try:
             value: Any = float(raw_value) if "." in raw_value else int(raw_value)
         except ValueError:
@@ -969,7 +1131,7 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
         row.update({
             "parsed_type": "value" if row["parsed_type"] == "raw" else row["parsed_type"],
             "key": key if not row.get("key") else row["key"],
-            "value": value if row["parsed_type"] == "value" else row.get("value", value),
+            "value": row["value"] if row.get("value") not in ("", None) else value,
             "unit": unit,
         })
         important = important or key in {
@@ -991,6 +1153,12 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
             "power_limit_kw",
             "current_zero_voltage",
             "current_zero_voltage_calibrated",
+            "current_offset_calibration_voltage_v",
+            "current_offset_raw_current_a",
+            "current_offset_a",
+            "raw_current_a",
+            "bms_start_time_ms",
+            "sd_memory_usage_percent",
         }
         state.pending_label = None
         state.pending_label_line = None
@@ -1306,133 +1474,249 @@ class SerialWorker(threading.Thread):
                 self.state.last_serial_line_time = None
                 self.state.raw_line_rate_hz = 0.0
 
-    def run(self) -> None:
-        global START_TIME
+    def _set_log_status(self, text: str) -> None:
+        with self.state_lock:
+            self.state.log_status = text
 
+    def _make_log_path(self) -> Path:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        log_path = self.log_dir / f"BMS_Serial_{timestamp}.csv"
+        base = self.log_dir / f"BMS_Serial_{timestamp}.csv"
+        if not base.exists():
+            return base
+
+        for index in range(1, 1000):
+            candidate = self.log_dir / f"BMS_Serial_{timestamp}_{index:03d}.csv"
+            if not candidate.exists():
+                return candidate
+        return self.log_dir / f"BMS_Serial_{timestamp}_{int(time.time() * 1000)}.csv"
+
+    def _open_log_file(self) -> tuple[Any, csv.DictWriter]:
+        log_path = self._make_log_path()
+        f = log_path.open("w", newline="", encoding="utf-8")
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        f.flush()
 
         with self.state_lock:
             self.state.log_path = log_path
-            self.state.serial_status = "Starting serial logger"
+            self.state.log_rollover_requested = False
+            self.state.log_rollover_in_progress = False
+            self.state.log_rollover_reason = ""
+            # Reset the displayed/logged line counter for each new CSV log file.
+            # This also makes the CSV line_number column start back at 1 after
+            # the next received serial line is parsed.
+            self.state.line_count = 0
+            self.state.pending_label = None
+            self.state.pending_label_line = None
+            self.state.pending_rx_id = None
+            self.state.array_section = None
+            self.state.pending_array_board = None
+            self.state.log_status = f"Logging to {log_path.name}"
+
+        self.status_queue.put(f"Logging to {log_path}")
+        return f, writer
+
+    def _close_log_file(self, log_file: Optional[Any], closed_path: Optional[Path] = None) -> None:
+        if log_file is None:
+            return
+
+        # On Windows, a CSV cannot be moved while this process still owns the
+        # file handle.  Flush, fsync, close, then force collection of any stale
+        # csv writer/file references before reporting that the old log is safe
+        # to move or archive.
+        try:
+            log_file.flush()
+        except Exception:
+            pass
 
         try:
-            with log_path.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
-                writer.writeheader()
-                last_status_message = ""
+            os.fsync(log_file.fileno())
+        except Exception:
+            pass
 
-                while not self.stop_event.is_set():
-                    port = self._candidate_port()
-                    if not port:
-                        status = f"Searching for BMS serial port; retrying every {SERIAL_RECONNECT_DELAY_S:.0f}s"
-                        self._set_serial_status(status, clear_last_line_time=True)
-                        if status != last_status_message:
-                            self.status_queue.put(status)
-                            last_status_message = status
-                        self._sleep_until_retry_or_stop()
-                        continue
+        try:
+            log_file.close()
+        except Exception:
+            pass
 
-                    self._set_serial_status(f"Opening {port} @ {self.baud}", clear_last_line_time=True)
+        gc.collect()
 
-                    try:
-                        with serial.Serial(port, self.baud, timeout=0.05) as ser:
-                            opened_status = f"Opened {port} @ {self.baud}; waiting for BMS data"
-                            self._set_serial_status(opened_status, clear_last_line_time=True)
-                            self.status_queue.put(opened_status)
-                            last_status_message = opened_status
+        if closed_path is not None:
+            with self.state_lock:
+                self.state.last_closed_log_path = closed_path
+                self.state.log_status = f"Closed {closed_path.name}; old file is safe to archive"
+            self.status_queue.put(f"Closed log file: {closed_path}")
 
-                            line_times: deque[float] = deque(maxlen=5000)
-                            opened_at = time.time()
-                            last_data_time: Optional[float] = None
-                            announced_connected = False
-                            last_flush = time.time()
+    def _take_log_rollover_request(self) -> bool:
+        with self.state_lock:
+            requested = self.state.log_rollover_requested
+            if requested:
+                self.state.log_rollover_requested = False
+                self.state.log_rollover_in_progress = True
+                self.state.log_status = "Closing current log file..."
+            return requested
 
-                            while not self.stop_event.is_set():
+    def _rollover_log_file(
+        self,
+        log_file: Optional[Any],
+        writer: Optional[csv.DictWriter],
+    ) -> tuple[Any, csv.DictWriter]:
+        old_path: Optional[Path]
+        with self.state_lock:
+            old_path = self.state.log_path
+            self.state.log_status = "Closing current log file..."
+
+        # Drop the writer reference before closing the file.  csv.writer keeps a
+        # reference to the file object's write method, which can delay releasing
+        # the Windows file lock if the old writer remains reachable.
+        writer = None
+        self._close_log_file(log_file, old_path)
+        log_file = None
+        gc.collect()
+
+        with self.state_lock:
+            self.state.log_status = "Opening new log file..."
+
+        return self._open_log_file()
+
+    def run(self) -> None:
+        global START_TIME
+
+        log_file: Optional[Any] = None
+        writer: Optional[csv.DictWriter] = None
+
+        try:
+            log_file, writer = self._open_log_file()
+            last_status_message = ""
+
+            while not self.stop_event.is_set():
+                if self._take_log_rollover_request():
+                    log_file, writer = self._rollover_log_file(log_file, writer)
+
+                port = self._candidate_port()
+                if not port:
+                    status = f"Searching for BMS serial port; retrying every {SERIAL_RECONNECT_DELAY_S:.0f}s"
+                    self._set_serial_status(status, clear_last_line_time=True)
+                    if status != last_status_message:
+                        self.status_queue.put(status)
+                        last_status_message = status
+                    self._sleep_until_retry_or_stop()
+                    continue
+
+                self._set_serial_status(f"Opening {port} @ {self.baud}", clear_last_line_time=True)
+
+                try:
+                    with serial.Serial(port, self.baud, timeout=0.05) as ser:
+                        opened_status = f"Opened {port} @ {self.baud}; waiting for BMS data"
+                        self._set_serial_status(opened_status, clear_last_line_time=True)
+                        self.status_queue.put(opened_status)
+                        last_status_message = opened_status
+
+                        line_times: deque[float] = deque(maxlen=5000)
+                        opened_at = time.time()
+                        last_data_time: Optional[float] = None
+                        announced_connected = False
+                        last_flush = time.time()
+
+                        while not self.stop_event.is_set():
+                            if self._take_log_rollover_request():
+                                log_file, writer = self._rollover_log_file(log_file, writer)
+                                last_flush = time.time()
+
+                            try:
+                                raw = ser.readline()
+                            except (serial.SerialException, OSError) as exc:
+                                raise serial.SerialException(exc) from exc
+
+                            now = time.time()
+
+                            if raw:
+                                if not announced_connected:
+                                    connected_status = f"Connected: {port} @ {self.baud}"
+                                    with self.state_lock:
+                                        self.state.serial_status = connected_status
+                                        START_TIME = self.state.start_time
+                                    self.status_queue.put(connected_status)
+                                    last_status_message = ""
+                                    announced_connected = True
+
+                                last_data_time = now
+                                line_times.append(now)
                                 try:
-                                    raw = ser.readline()
-                                except (serial.SerialException, OSError) as exc:
-                                    raise serial.SerialException(exc) from exc
+                                    line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                                except Exception:
+                                    line = repr(raw)
+                                if self.raw_echo:
+                                    print(line)
 
-                                now = time.time()
-
-                                if raw:
-                                    if not announced_connected:
-                                        connected_status = f"Connected: {port} @ {self.baud}"
-                                        with self.state_lock:
-                                            self.state.serial_status = connected_status
-                                            START_TIME = self.state.start_time
-                                        self.status_queue.put(connected_status)
-                                        last_status_message = ""
-                                        announced_connected = True
-
-                                    last_data_time = now
-                                    line_times.append(now)
-                                    try:
-                                        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-                                    except Exception:
-                                        line = repr(raw)
-                                    if self.raw_echo:
-                                        print(line)
-
-                                    with self.state_lock:
-                                        row = process_line(line, now, self.state)
-                                    writer.writerow(row)
-                                    # Green serial indicator is based on data actually being
-                                    # received and saved, not merely on the COM port opening.
-                                    with self.state_lock:
-                                        self.state.last_serial_line_time = now
-
-                                else:
-                                    if last_data_time is None:
-                                        silent_for = now - opened_at
-                                        if silent_for >= SERIAL_CONNECT_NO_DATA_TIMEOUT_S:
-                                            raise serial.SerialException(
-                                                f"No BMS serial data received from {port} for {silent_for:.1f}s"
-                                            )
-                                    else:
-                                        silent_for = now - last_data_time
-                                        if silent_for >= SERIAL_STALE_DATA_RECONNECT_S:
-                                            raise serial.SerialException(
-                                                f"BMS serial data stopped on {port} for {silent_for:.1f}s"
-                                            )
-
-                                while line_times and now - line_times[0] > 1.0:
-                                    line_times.popleft()
                                 with self.state_lock:
-                                    self.state.raw_line_rate_hz = float(len(line_times))
+                                    row = process_line(line, now, self.state)
+                                if writer is not None:
+                                    writer.writerow(row)
 
-                                if now - last_flush >= 1.0:
-                                    f.flush()
-                                    last_flush = now
-                    except (serial.SerialException, OSError) as exc:
-                        exc_text = str(exc)
-                        status = f"Serial disconnected/error on {port}: {exc_text}; retrying"
-                        self._set_serial_status(status, clear_last_line_time=True)
-                        self.status_queue.put(status)
-                        lower_exc = exc_text.lower()
-                        cooldown = SERIAL_NO_DATA_PORT_COOLDOWN_S if "no bms serial data" in lower_exc else SERIAL_BAD_PORT_COOLDOWN_S
-                        self._mark_auto_port_bad(port, exc_text, cooldown)
-                        self._sleep_until_retry_or_stop()
+                                # Green serial indicator is based on data actually being
+                                # received and saved, not merely on the COM port opening.
+                                with self.state_lock:
+                                    self.state.last_serial_line_time = now
 
-                    except Exception as exc:
-                        exc_text = str(exc)
-                        status = f"Logger error: {exc_text}; retrying"
-                        self._set_serial_status(status, clear_last_line_time=True)
-                        self.status_queue.put(status)
-                        self._mark_auto_port_bad(port, exc_text, SERIAL_BAD_PORT_COOLDOWN_S)
-                        self._sleep_until_retry_or_stop()
+                            else:
+                                if last_data_time is None:
+                                    silent_for = now - opened_at
+                                    if silent_for >= SERIAL_CONNECT_NO_DATA_TIMEOUT_S:
+                                        raise serial.SerialException(
+                                            f"No BMS serial data received from {port} for {silent_for:.1f}s"
+                                        )
+                                else:
+                                    silent_for = now - last_data_time
+                                    if silent_for >= SERIAL_STALE_DATA_RECONNECT_S:
+                                        raise serial.SerialException(
+                                            f"BMS serial data stopped on {port} for {silent_for:.1f}s"
+                                        )
 
-                    finally:
-                        try:
-                            f.flush()
-                        except Exception:
-                            pass
+                            while line_times and now - line_times[0] > 1.0:
+                                line_times.popleft()
+                            with self.state_lock:
+                                self.state.raw_line_rate_hz = float(len(line_times))
+
+                            if log_file is not None and now - last_flush >= 1.0:
+                                log_file.flush()
+                                last_flush = now
+
+                except (serial.SerialException, OSError) as exc:
+                    exc_text = str(exc)
+                    status = f"Serial disconnected/error on {port}: {exc_text}; retrying"
+                    self._set_serial_status(status, clear_last_line_time=True)
+                    self.status_queue.put(status)
+                    lower_exc = exc_text.lower()
+                    cooldown = SERIAL_NO_DATA_PORT_COOLDOWN_S if "no bms serial data" in lower_exc else SERIAL_BAD_PORT_COOLDOWN_S
+                    self._mark_auto_port_bad(port, exc_text, cooldown)
+                    self._sleep_until_retry_or_stop()
+
+                except Exception as exc:
+                    exc_text = str(exc)
+                    status = f"Logger error: {exc_text}; retrying"
+                    self._set_serial_status(status, clear_last_line_time=True)
+                    self.status_queue.put(status)
+                    self._mark_auto_port_bad(port, exc_text, SERIAL_BAD_PORT_COOLDOWN_S)
+                    self._sleep_until_retry_or_stop()
+
+                finally:
+                    try:
+                        if log_file:
+                            log_file.flush()
+                    except Exception:
+                        pass
 
         finally:
+            old_path: Optional[Path]
+            with self.state_lock:
+                old_path = self.state.log_path
+            writer = None
+            self._close_log_file(log_file, old_path)
             with self.state_lock:
                 self.state.serial_status = "Stopped" if self.stop_event.is_set() else "Logger stopped"
+                self.state.log_status = "Log file closed"
 
 
 class Dial(ttk.Frame):
@@ -1461,7 +1745,9 @@ class Dial(ttk.Frame):
         self._last_max: Optional[float] = None
         self._last_current: Optional[float] = None
         self._last_current_label = "NOW"
-        self.canvas = tk.Canvas(self, width=width, height=height, bg="#101214", highlightthickness=0)
+        self._last_delta: Optional[float] = None
+        self._last_median: Optional[float] = None
+        self.canvas = tk.Canvas(self, width=width, height=height, bg=GUI_BG_NORMAL, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", self._on_canvas_resize)
 
@@ -1501,11 +1787,24 @@ class Dial(ttk.Frame):
         max_reading: Optional[float],
         current_reading: Optional[float] = None,
         current_label: str = "NOW",
+        median_reading: Optional[float] = None,
+        delta_reading: Optional[float] = None,
     ) -> None:
         self._last_min = min_reading
         self._last_max = max_reading
         self._last_current = current_reading
         self._last_current_label = current_label
+        self._last_median = median_reading
+
+        if delta_reading is not None:
+            self._last_delta = delta_reading
+        elif min_reading is not None and max_reading is not None and median_reading is not None:
+            # Only auto-display delta on dials where a median was requested.
+            # This keeps the current dial unchanged.
+            self._last_delta = max_reading - min_reading
+        else:
+            self._last_delta = None
+
         self._draw_cached()
 
     def _draw_cached(self) -> None:
@@ -1590,7 +1889,45 @@ class Dial(ttk.Frame):
             bottom_text = f"Min: {min_text}    Max: {max_text}"
         else:
             bottom_text = f"Now: {fmt(self._last_current)}    Min: {min_text}    Max: {max_text}"
-        c.create_text(cx, h - (10 if compact else 18), text=bottom_text, fill="#F2F2F2", font=("Segoe UI", value_size, "bold"))
+
+        stats_parts: list[str] = []
+        if self._last_delta is not None:
+            stats_parts.append(f"Delta: {fmt(self._last_delta)}")
+        if self._last_median is not None:
+            stats_parts.append(f"Median: {fmt(self._last_median)}")
+        stats_text = "    ".join(stats_parts)
+
+        if stats_text and h >= 118:
+            c.create_text(
+                cx,
+                h - (24 if compact else 30),
+                text=bottom_text,
+                fill="#F2F2F2",
+                font=("Segoe UI", value_size, "bold"),
+            )
+            c.create_text(
+                cx,
+                h - (9 if compact else 14),
+                text=stats_text,
+                fill="#F2F2F2",
+                font=("Segoe UI", max(6, value_size - 1), "bold"),
+            )
+        elif stats_text:
+            c.create_text(
+                cx,
+                h - (10 if compact else 18),
+                text=f"{bottom_text}    {stats_text}",
+                fill="#F2F2F2",
+                font=("Segoe UI", max(6, value_size - 1), "bold"),
+            )
+        else:
+            c.create_text(
+                cx,
+                h - (10 if compact else 18),
+                text=bottom_text,
+                fill="#F2F2F2",
+                font=("Segoe UI", value_size, "bold"),
+            )
 
 
 class ModuleMap(ttk.Frame):
@@ -1622,7 +1959,7 @@ class ModuleMap(ttk.Frame):
             self,
             width=self.display_width,
             height=self.display_height,
-            bg="#070707",
+            bg=GUI_BG_NORMAL,
             highlightthickness=1,
             highlightbackground="#333333",
         )
@@ -1952,7 +2289,7 @@ class ModuleMap(ttk.Frame):
         overall_tmin = allboard_ranges.get("tmin")
         overall_tmax = allboard_ranges.get("tmax")
 
-        c.create_rectangle(4, 4, 360, 30, fill="#101214", outline=board_color, width=2)
+        c.create_rectangle(4, 4, 360, 30, fill=GUI_BG_NORMAL, outline=board_color, width=2)
         c.create_text(
             14,
             17,
@@ -1966,7 +2303,7 @@ class ModuleMap(ttk.Frame):
             f"Overall Vmin: {self.fmt_voltage_item(overall_vmin)}    Overall Vmax: {self.fmt_voltage_item(overall_vmax)}\n"
             f"Overall Tmin: {self.fmt_temp_item(overall_tmin)}    Overall Tmax: {self.fmt_temp_item(overall_tmax)}"
         )
-        c.create_rectangle(4, 34, 470, 78, fill="#101214", outline="#445", width=1)
+        c.create_rectangle(4, 34, 470, 78, fill=GUI_BG_NORMAL, outline="#445", width=1)
         c.create_text(12, 56, anchor="w", text=summary, fill="#F2F2F2", font=("Segoe UI", 8, "bold"))
 
     def draw(
@@ -2109,7 +2446,7 @@ class ModuleMap(ttk.Frame):
                 justify="center",
             )
 
-        c.create_rectangle(4, 4, 292, 30, fill="#101214", outline=board_color, width=2)
+        c.create_rectangle(4, 4, 292, 30, fill=GUI_BG_NORMAL, outline=board_color, width=2)
         c.create_text(
             14,
             17,
@@ -2129,7 +2466,7 @@ class ModuleMap(ttk.Frame):
             f"Visible Vmin: {fmt_cell(vmin_cell, vmin_val)}    Visible Vmax: {fmt_cell(vmax_cell, vmax_val)}\n"
             f"Visible Tmin: {fmt_temp(tmin_sensor, tmin_val)}    Visible Tmax: {fmt_temp(tmax_sensor, tmax_val)}"
         )
-        c.create_rectangle(4, 34, 490, 78, fill="#101214", outline="#445", width=1)
+        c.create_rectangle(4, 34, 490, 78, fill=GUI_BG_NORMAL, outline="#445", width=1)
         c.create_text(12, 56, anchor="w", text=summary, fill="#F2F2F2", font=("Segoe UI", 8, "bold"))
 
 
@@ -2156,7 +2493,7 @@ class GraphView(ttk.Frame):
         self.series_frame.pack(fill="x", pady=(0, 4))
         self.build_series_checks(columns=4)
 
-        self.canvas = tk.Canvas(self, bg="#070707", highlightthickness=1, highlightbackground="#333333")
+        self.canvas = tk.Canvas(self, bg=GUI_BG_NORMAL, highlightthickness=1, highlightbackground="#333333")
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda _event: self._draw_cached())
         self._last_samples: list[tuple[float, str, float, str]] = []
@@ -2171,7 +2508,7 @@ class GraphView(ttk.Frame):
             c = idx % columns
             item = ttk.Frame(self.series_frame)
             item.grid(row=r, column=c, sticky="w", padx=(0, 10), pady=1)
-            swatch = tk.Canvas(item, width=12, height=12, bg="#0D1117", highlightthickness=0)
+            swatch = tk.Canvas(item, width=12, height=12, bg=GUI_BG_NORMAL, highlightthickness=0)
             swatch.pack(side="left", padx=(0, 3))
             swatch.create_rectangle(1, 1, 11, 11, fill=color, outline="#F2F2F2", width=1)
             ttk.Checkbutton(
@@ -2294,7 +2631,7 @@ class GraphView(ttk.Frame):
             y_min -= pad
             y_max += pad
 
-        c.create_rectangle(x, y, x + w, y + h, fill="#101214", outline="#30363D", width=1)
+        c.create_rectangle(x, y, x + w, y + h, fill=GUI_BG_NORMAL, outline="#30363D", width=1)
         c.create_text(x + 8, y + 12, anchor="w", text=f"{unit} graph", fill="#F2F2F2", font=("Segoe UI", 10, "bold"))
 
         # Grid and y-axis labels.
@@ -2358,7 +2695,7 @@ class BMSGuiApp:
         root.title("EV4 BMS Serial GUI")
         root.geometry("1600x980")
         root.minsize(1200, 760)
-        root.configure(bg="#0D1117")
+        root.configure(bg=GUI_BG_NORMAL)
 
         self.style = ttk.Style()
         try:
@@ -2366,10 +2703,10 @@ class BMSGuiApp:
         except Exception:
             pass
         self.style.configure(".", font=("Segoe UI", 9))
-        self.style.configure("TFrame", background="#0D1117")
-        self.style.configure("TLabelframe", background="#0D1117", foreground="#F2F2F2")
-        self.style.configure("TLabelframe.Label", background="#0D1117", foreground="#F2F2F2", font=("Segoe UI", 10, "bold"))
-        self.style.configure("TLabel", background="#0D1117", foreground="#F2F2F2")
+        self.style.configure("TFrame", background=GUI_BG_NORMAL)
+        self.style.configure("TLabelframe", background=GUI_BG_NORMAL, foreground="#F2F2F2")
+        self.style.configure("TLabelframe.Label", background="#5E5E5E", foreground="#F2F2F2", font=("Segoe UI", 10, "bold"))
+        self.style.configure("TLabel", background=GUI_BG_NORMAL, foreground="#F2F2F2")
         self.style.configure("TButton", padding=5)
         self.style.configure("Pair.TButton", padding=4)
 
@@ -2381,6 +2718,17 @@ class BMSGuiApp:
         self.root.bind("<Configure>", self.on_root_configure, add="+")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.schedule_update()
+
+    def request_new_log_file(self) -> None:
+        with self.state_lock:
+            if self.state.log_rollover_requested or self.state.log_rollover_in_progress:
+                self.state.log_status = "New log already requested; waiting for logger..."
+                return
+            self.state.log_rollover_requested = True
+            self.state.log_rollover_reason = "manual_button"
+            current_log = self.state.log_path.name if self.state.log_path else "current log"
+            self.state.log_status = f"New log requested; closing {current_log}..."
+        self.status_queue.put("Manual log rollover requested")
 
     def make_var(self, name: str, default: str = "NaN") -> tk.StringVar:
         v = tk.StringVar(value=default)
@@ -2422,6 +2770,14 @@ class BMSGuiApp:
         for right_row in range(5):
             event_panel.rowconfigure(right_row, weight=0)
         event_panel.rowconfigure(5, weight=1)  # bottom spacer absorbs extra height
+
+        log_controls = ttk.Frame(left_panel)
+        log_controls.pack(fill="x", pady=(0, 6))
+        ttk.Button(
+            log_controls,
+            text="Start New Log File",
+            command=self.request_new_log_file,
+        ).pack(side="left", padx=(0, 6))
 
         self.build_status_panel(left_panel)
 
@@ -2487,7 +2843,7 @@ class BMSGuiApp:
         self.view_toggle = ttk.Button(controls, text="Graph Mode", command=self.toggle_view_mode)
         self.view_toggle.pack(side="left", padx=(16, 0))
 
-        self.legend = tk.Canvas(map_panel, height=54, bg="#0D1117", highlightthickness=0)
+        self.legend = tk.Canvas(map_panel, height=54, bg=GUI_BG_NORMAL, highlightthickness=0)
         self.legend.grid(row=1, column=0, sticky="we", pady=(4, 4))
         self.legend.bind("<Configure>", lambda _event: self.draw_legend())
 
@@ -2777,7 +3133,7 @@ class BMSGuiApp:
             frame,
             height=height,
             width=width,
-            bg="#101214",
+            bg=GUI_BG_NORMAL,
             fg="#F2F2F2",
             insertbackground="#F2F2F2",
             relief="flat",
@@ -2793,9 +3149,12 @@ class BMSGuiApp:
         fields = [
             ("Serial", "serial_status"),
             ("Cell V", "cell_voltage_status"),
+            ("Cell T", "cell_temp_status"),
+            ("Current", "current_status"),
             ("Mode", "mode"),
             ("Run/Lines/Rate", "runtime_line_rate"),
             ("Log", "log"),
+            ("Log State", "log_status"),
         ]
 
         for r, (label, key) in enumerate(fields):
@@ -2816,20 +3175,30 @@ class BMSGuiApp:
 
                 ttk.Label(serial_frame, textvariable=self.make_var(key), wraplength=245).pack(side="left")
 
-            elif key == "cell_voltage_status":
-                voltage_frame = ttk.Frame(frame)
-                voltage_frame.grid(row=r, column=1, sticky="w", padx=4, pady=2)
+            elif key in {"cell_voltage_status", "cell_temp_status", "current_status"}:
+                activity_frame = ttk.Frame(frame)
+                activity_frame.grid(row=r, column=1, sticky="w", padx=4, pady=2)
 
-                self.cell_voltage_indicator = tk.Canvas(voltage_frame, width=14, height=14, bg=GUI_BG_NORMAL, highlightthickness=0)
-                self.cell_voltage_indicator.pack(side="left", padx=(0, 5))
-                self.cell_voltage_indicator_id = self.cell_voltage_indicator.create_oval(
+                indicator = tk.Canvas(activity_frame, width=14, height=14, bg=GUI_BG_NORMAL, highlightthickness=0)
+                indicator.pack(side="left", padx=(0, 5))
+                indicator_id = indicator.create_oval(
                     2, 2, 12, 12,
                     fill="#FFD23F",  # idle yellow
                     outline="#F2F2F2",
                     width=1,
                 )
 
-                ttk.Label(voltage_frame, textvariable=self.make_var(key), wraplength=245).pack(side="left")
+                if key == "cell_voltage_status":
+                    self.cell_voltage_indicator = indicator
+                    self.cell_voltage_indicator_id = indicator_id
+                elif key == "cell_temp_status":
+                    self.cell_temp_indicator = indicator
+                    self.cell_temp_indicator_id = indicator_id
+                else:
+                    self.current_indicator = indicator
+                    self.current_indicator_id = indicator_id
+
+                ttk.Label(activity_frame, textvariable=self.make_var(key), wraplength=245).pack(side="left")
 
             elif key == "runtime_line_rate":
                 compact_frame = ttk.Frame(frame)
@@ -2975,35 +3344,73 @@ class BMSGuiApp:
             self.serial_indicator.itemconfig(self.serial_indicator_id, fill=color)
 
 
+    def update_activity_indicator(
+        self,
+        status_key: str,
+        indicator_attr: str,
+        indicator_id_attr: str,
+        last_update_time: Optional[float],
+        avg_refresh_ms: Optional[float],
+        activity_flash_s: float,
+    ) -> None:
+        """Flash green on fresh data and show a rolling average refresh time."""
+        now = time.time()
+        just_received = (
+            last_update_time is not None
+            and (now - last_update_time) <= activity_flash_s
+        )
+
+        color = "#2ECC71" if just_received else "#FFD23F"
+        text = "avg -- ms" if avg_refresh_ms is None else f"avg {avg_refresh_ms:.1f} ms"
+        self.vars[status_key].set(text)
+
+        indicator = getattr(self, indicator_attr, None)
+        indicator_id = getattr(self, indicator_id_attr, None)
+        if indicator is not None and indicator_id is not None:
+            indicator.configure(bg=getattr(self, "current_bg", GUI_BG_NORMAL))
+            indicator.itemconfig(indicator_id, fill=color)
+
     def update_cell_voltage_indicator(
         self,
         last_voltage_time: Optional[float],
         avg_refresh_ms: Optional[float],
     ) -> None:
-        """
-        Flash green briefly when a board cell-voltage row is received.
-        Idle color is yellow.
-
-        The text shows the rolling average refresh time in milliseconds.
-        """
-        now = time.time()
-        just_received = (
-            last_voltage_time is not None
-            and (now - last_voltage_time) <= CELL_VOLTAGE_ACTIVITY_FLASH_S
+        self.update_activity_indicator(
+            "cell_voltage_status",
+            "cell_voltage_indicator",
+            "cell_voltage_indicator_id",
+            last_voltage_time,
+            avg_refresh_ms,
+            CELL_VOLTAGE_ACTIVITY_FLASH_S,
         )
 
-        color = "#2ECC71" if just_received else "#FFD23F"
+    def update_cell_temp_indicator(
+        self,
+        last_temp_time: Optional[float],
+        avg_refresh_ms: Optional[float],
+    ) -> None:
+        self.update_activity_indicator(
+            "cell_temp_status",
+            "cell_temp_indicator",
+            "cell_temp_indicator_id",
+            last_temp_time,
+            avg_refresh_ms,
+            CELL_TEMP_ACTIVITY_FLASH_S,
+        )
 
-        if avg_refresh_ms is None:
-            text = "avg -- ms"
-        else:
-            text = f"avg {avg_refresh_ms:.1f} ms"
-
-        self.vars["cell_voltage_status"].set(text)
-
-        if hasattr(self, "cell_voltage_indicator"):
-            self.cell_voltage_indicator.configure(bg=getattr(self, "current_bg", GUI_BG_NORMAL))
-            self.cell_voltage_indicator.itemconfig(self.cell_voltage_indicator_id, fill=color)
+    def update_current_indicator(
+        self,
+        last_current_time: Optional[float],
+        avg_refresh_ms: Optional[float],
+    ) -> None:
+        self.update_activity_indicator(
+            "current_status",
+            "current_indicator",
+            "current_indicator_id",
+            last_current_time,
+            avg_refresh_ms,
+            CURRENT_ACTIVITY_FLASH_S,
+        )
 
     def apply_alarm_background(self, allboard_ranges: dict[str, Any]) -> None:
         # Charger faults are intentionally ignored here; this is driven only by
@@ -3030,6 +3437,12 @@ class BMSGuiApp:
 
         if hasattr(self, "cell_voltage_indicator"):
             self.cell_voltage_indicator.configure(bg=bg)
+
+        if hasattr(self, "cell_temp_indicator"):
+            self.cell_temp_indicator.configure(bg=bg)
+
+        if hasattr(self, "current_indicator"):
+            self.current_indicator.configure(bg=bg)
 
     def force_redraw(self) -> None:
         self.update_gui()
@@ -3090,6 +3503,30 @@ class BMSGuiApp:
             "max": max(items, key=lambda item: item["value"]),
         }
 
+    @staticmethod
+    def median_item_value(items: list[dict[str, Any]]) -> Optional[float]:
+        """Return the median of an item list that stores numeric values under item["value"]."""
+        if not items:
+            return None
+
+        values: list[float] = []
+        for item in items:
+            try:
+                value = float(item["value"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if not math.isnan(value):
+                values.append(value)
+
+        if not values:
+            return None
+
+        values.sort()
+        mid = len(values) // 2
+        if len(values) % 2:
+            return values[mid]
+        return (values[mid - 1] + values[mid]) / 2.0
+
     def get_allboard_ranges(self, state: MonitorState) -> dict[str, Any]:
         """
         Compute min/max from ALL reported boards, grouped by physical location.
@@ -3099,8 +3536,11 @@ class BMSGuiApp:
           even boards -> physical cells C15-C28
 
         Temperature mapping:
-          odd boards  -> odd physical U labels:  U1, U3, ... U19
-          even boards -> even physical U labels: U2, U4, ... U20
+          odd boards in each selected pair  -> U1..U10
+          even boards in each selected pair -> U11..U20
+
+        Note: U# overlay coordinates are not moved.  Only the data routing
+        from each board's 10 temperature values to physical U labels changes.
 
         Disconnected thermistors reported as -55 C are ignored.
 
@@ -3143,9 +3583,11 @@ class BMSGuiApp:
                     continue
 
                 value = float(raw_value)
-                # Odd-numbered boards map to odd physical U labels on the left image.
-                # Even-numbered boards map to even physical U labels on the right image.
-                sensor = (1 + 2 * i) if board % 2 == 1 else (2 + 2 * i)
+                # Board-local temperature index routing:
+                #   odd board in pair  -> U1..U10
+                #   even board in pair -> U11..U20
+                # Do not move the U# overlay coordinates; only route values here.
+                sensor = self.board_temp_sensor_number(board, i)
                 item = {
                     "board": board,
                     "sensor": sensor,
@@ -3173,28 +3615,61 @@ class BMSGuiApp:
             "temp_ranges": temp_ranges,
             "vmin": min(all_voltage_items, key=lambda item: item["value"]) if all_voltage_items else None,
             "vmax": max(all_voltage_items, key=lambda item: item["value"]) if all_voltage_items else None,
+            "vmedian": self.median_item_value(all_voltage_items),
             "tmin": min(all_temp_items, key=lambda item: item["value"]) if all_temp_items else None,
             "tmax": max(all_temp_items, key=lambda item: item["value"]) if all_temp_items else None,
+            "tmedian": self.median_item_value(all_temp_items),
             "has_voltage_fault": has_voltage_fault,
             "has_temp_fault": has_temp_fault,
             "has_1p5v": has_1p5v,
         }
 
 
-    def get_board_temp_sensors(self, state: MonitorState, board: int, start_sensor: int = 0) -> dict[int, Optional[float]]:
+    def board_temp_sensor_number(self, board: int, temp_index: int) -> int:
+        """
+        Route a board-local temperature index to the fixed physical U label.
+
+        For every board pair:
+          odd board  -> temp[0..9] maps to U1..U10
+          even board -> temp[0..9] maps to U11..U20
+
+        Examples:
+          board 1 temp[9] -> U10
+          board 2 temp[0] -> U11
+          board 2 temp[9] -> U20
+
+        The LEFT_TEMP_COORDS / RIGHT_TEMP_COORDS dictionaries remain the source
+        of truth for where each U# is drawn.  This function only decides which
+        board temperature value is routed to each U#.
+        """
+        if board % 2 == 1:
+            return temp_index + 1
+        return temp_index + 11
+
+    def get_board_temp_sensors(self, state: MonitorState, board: int) -> dict[int, Optional[float]]:
         values = state.board_temps.get(board, [])
         out: dict[int, Optional[float]] = {}
 
         for i in range(10):
-            # Odd-numbered boards map to odd physical U labels on the left image.
-            # Even-numbered boards map to even physical U labels on the right image.
-            sensor = (1 + 2 * i) if board % 2 == 1 else (2 + 2 * i)
+            sensor = self.board_temp_sensor_number(board, i)
 
             if i < len(values) and self.is_valid_thermistor_temp(values[i]):
                 out[sensor] = values[i]
             else:
                 out[sensor] = None
 
+        return out
+
+    def get_pair_temp_sensors(self, state: MonitorState, odd_board: int, even_board: int) -> dict[int, Optional[float]]:
+        """
+        Combine one board pair into a single U1..U20 temperature map.
+
+        Odd board values fill U1..U10.
+        Even board values fill U11..U20.
+        """
+        out: dict[int, Optional[float]] = {}
+        out.update(self.get_board_temp_sensors(state, odd_board))
+        out.update(self.get_board_temp_sensors(state, even_board))
         return out
 
     def draw_legend(self) -> None:
@@ -3270,6 +3745,8 @@ class BMSGuiApp:
             self.vars["lines"].set(str(state.line_count))
             self.vars["rate"].set(f"{state.raw_line_rate_hz:.1f} lines/s")
             self.vars["log"].set(str(state.log_path) if state.log_path else "NaN")
+            if "log_status" in self.vars:
+                self.vars["log_status"].set(state.log_status)
 
             for key in [
                 "pack_voltage_v",
@@ -3347,10 +3824,35 @@ class BMSGuiApp:
                 )
             else:
                 avg_voltage_refresh_ms = None
+
+            last_temp_time_for_indicator = state.last_cell_temp_update_time
+            if state.cell_temp_refresh_intervals_ms:
+                avg_temp_refresh_ms = (
+                    sum(state.cell_temp_refresh_intervals_ms)
+                    / len(state.cell_temp_refresh_intervals_ms)
+                )
+            else:
+                avg_temp_refresh_ms = None
+
+            last_current_time_for_indicator = state.last_current_update_time
+            if state.current_refresh_intervals_ms:
+                avg_current_refresh_ms = (
+                    sum(state.current_refresh_intervals_ms)
+                    / len(state.current_refresh_intervals_ms)
+                )
+            else:
+                avg_current_refresh_ms = None
+
             min_v = allboard_ranges["vmin"]["value"] if allboard_ranges["vmin"] else get_latest_float(state, "min_cell_voltage_v")
             max_v = allboard_ranges["vmax"]["value"] if allboard_ranges["vmax"] else get_latest_float(state, "max_cell_voltage_v")
+            median_v = allboard_ranges.get("vmedian")
+            delta_v = (max_v - min_v) if min_v is not None and max_v is not None else None
+
             min_t = allboard_ranges["tmin"]["value"] if allboard_ranges["tmin"] else get_latest_float(state, "min_cell_temp_c")
             max_t = allboard_ranges["tmax"]["value"] if allboard_ranges["tmax"] else get_latest_float(state, "max_cell_temp_c")
+            median_t = allboard_ranges.get("tmedian")
+            delta_t = (max_t - min_t) if min_t is not None and max_t is not None else None
+
             current_min, current_max, current_now = recent_current_minmax(state, now)
             alerts = [text for _key, text in sorted(state.active_alerts.items())][:ACTIVE_ALERT_LINES]
             while len(alerts) < ACTIVE_ALERT_LINES:
@@ -3367,8 +3869,9 @@ class BMSGuiApp:
             pair_voltages = self.get_pair_voltage_cells(state, odd_board, even_board)
             left_voltages = pair_voltages
             right_voltages = pair_voltages
-            left_temps = self.get_board_temp_sensors(state, odd_board)
-            right_temps = self.get_board_temp_sensors(state, even_board)
+            pair_temps = self.get_pair_temp_sensors(state, odd_board, even_board)
+            left_temps = pair_temps
+            right_temps = pair_temps
             overlay_filter = self.overlay_filter.get()
             time_series_samples = list(state.time_series)
 
@@ -3376,9 +3879,11 @@ class BMSGuiApp:
         self.apply_alarm_background(allboard_ranges)
         self.update_serial_indicator(serial_status_for_indicator, last_line_time_for_indicator)
         self.update_cell_voltage_indicator(last_voltage_time_for_indicator, avg_voltage_refresh_ms)
+        self.update_cell_temp_indicator(last_temp_time_for_indicator, avg_temp_refresh_ms)
+        self.update_current_indicator(last_current_time_for_indicator, avg_current_refresh_ms)
 
-        self.voltage_dial.draw(min_v, max_v)
-        self.temp_dial.draw(min_t, max_t)
+        self.voltage_dial.draw(min_v, max_v, median_reading=median_v, delta_reading=delta_v)
+        self.temp_dial.draw(min_t, max_t, median_reading=median_t, delta_reading=delta_t)
         self.current_dial.draw(current_min, current_max, current_now, "NOW")
         if self.view_mode.get() == "graph":
             self.graph_view.draw_samples(time_series_samples, now)
@@ -3435,7 +3940,7 @@ def main() -> int:
     parser.add_argument("--port", help="Serial port, example COM7, COM12, /dev/ttyACM0")
     parser.add_argument("--auto", action="store_true", help="Auto-select a likely Teensy/USB serial port")
     parser.add_argument("--list", action="store_true", help="List serial ports and exit")
-    parser.add_argument("--baud", type=int, default=9600, help="Serial baud rate. Current BMS code uses Serial.begin(9600).")
+    parser.add_argument("--baud", type=int, default=115200, help="Serial baud rate. Current BMS code uses Serial.begin(115200).")
     parser.add_argument("--log-dir", default="BMS_Serial_Laptop_Recieved", help="Folder for timestamped CSV logs")
     parser.add_argument("--left-image", help="Path to Left_Side_Module.png")
     parser.add_argument("--right-image", help="Path to Right_Side_Module.png")
@@ -3456,8 +3961,8 @@ def main() -> int:
         list_serial_ports()
         print()
         print("Examples:")
-        print("  python bms_serial_gui.py --port COM7 --baud 9600")
-        print("  python bms_serial_gui.py --auto --baud 9600")
+        print("  python bms_serial_gui.py --port COM7 --baud 115200")
+        print("  python bms_serial_gui.py --auto --baud 115200")
         return 2
 
     if not port and args.auto:
