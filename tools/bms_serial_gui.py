@@ -435,6 +435,10 @@ class MonitorState:
     log_rollover_reason: str = ""
     serial_status: str = "disconnected"
     last_serial_line_time: Optional[float] = None
+    serial_command_tx_count: int = 0
+    last_serial_command_sent_time: Optional[float] = None
+    last_serial_command_sent: str = ""
+    serial_command_status: str = "No command sent"
     last_cell_voltage_update_time: Optional[float] = None
     cell_voltage_refresh_intervals_ms: deque[float] = field(
         default_factory=lambda: deque(maxlen=CELL_VOLTAGE_REFRESH_WINDOW_SAMPLES)
@@ -1425,6 +1429,7 @@ class SerialWorker(threading.Thread):
         baud: int,
         log_dir: Path,
         status_queue: "queue.Queue[str]",
+        command_queue: "queue.Queue[str]",
         raw_echo: bool = False,
         auto_port: bool = False,
     ) -> None:
@@ -1436,6 +1441,7 @@ class SerialWorker(threading.Thread):
         self.baud = baud
         self.log_dir = log_dir
         self.status_queue = status_queue
+        self.command_queue = command_queue
         self.raw_echo = raw_echo
         self.auto_port = auto_port
         self.bad_port_until: dict[str, float] = {}
@@ -1477,6 +1483,42 @@ class SerialWorker(threading.Thread):
     def _set_log_status(self, text: str) -> None:
         with self.state_lock:
             self.state.log_status = text
+
+    def _write_pending_commands(self, ser: serial.Serial) -> None:
+        """Write GUI-entered serial commands from the worker thread.
+
+        The Tkinter GUI must not write to pyserial directly because the serial
+        object is owned by this worker thread. Commands are queued by the GUI and
+        drained here while the COM port is open.
+        """
+        while not self.stop_event.is_set():
+            try:
+                command = self.command_queue.get_nowait()
+            except queue.Empty:
+                return
+
+            command = command.rstrip("\r\n")
+            if not command.strip():
+                continue
+
+            payload = (command + "\n").encode("utf-8")
+            try:
+                ser.write(payload)
+                ser.flush()
+            except (serial.SerialException, OSError) as exc:
+                with self.state_lock:
+                    self.state.serial_command_status = f"Send failed: {exc}"
+                self.status_queue.put(f"Serial command send failed: {exc}")
+                raise serial.SerialException(exc) from exc
+
+            now = time.time()
+            with self.state_lock:
+                self.state.serial_command_tx_count += 1
+                self.state.last_serial_command_sent_time = now
+                self.state.last_serial_command_sent = command
+                self.state.serial_command_status = f"Sent: {command}"
+                self.state.recent_events.append(f"PC->BMS Serial command: {command}")
+            self.status_queue.put(f"Sent serial command to BMS: {command}")
 
     def _make_log_path(self) -> Path:
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -1623,6 +1665,8 @@ class SerialWorker(threading.Thread):
                             if self._take_log_rollover_request():
                                 log_file, writer = self._rollover_log_file(log_file, writer)
                                 last_flush = time.time()
+
+                            self._write_pending_commands(ser)
 
                             try:
                                 raw = ser.readline()
@@ -2679,11 +2723,21 @@ class GraphView(ttk.Frame):
 
 
 class BMSGuiApp:
-    def __init__(self, root: tk.Tk, state: MonitorState, state_lock: threading.RLock, stop_event: threading.Event, left_image: Path, right_image: Path) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        state: MonitorState,
+        state_lock: threading.RLock,
+        stop_event: threading.Event,
+        command_queue: "queue.Queue[str]",
+        left_image: Path,
+        right_image: Path,
+    ) -> None:
         self.root = root
         self.state = state
         self.state_lock = state_lock
         self.stop_event = stop_event
+        self.command_queue = command_queue
         self.status_queue: "queue.Queue[str]" = queue.Queue()
         self.selected_pair = tk.IntVar(value=1)
         self.overlay_filter = tk.StringVar(value="minmax")
@@ -2718,6 +2772,41 @@ class BMSGuiApp:
         self.root.bind("<Configure>", self.on_root_configure, add="+")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.schedule_update()
+
+    def serial_stream_active(self) -> bool:
+        with self.state_lock:
+            serial_status = self.state.serial_status
+            last_line_time = self.state.last_serial_line_time
+
+        return (
+            serial_status.lower().startswith("connected")
+            and last_line_time is not None
+            and (time.time() - last_line_time) <= SERIAL_DATA_ALIVE_TIMEOUT_S
+        )
+
+    def send_serial_command(self, event: Optional[tk.Event] = None) -> str:
+        command = self.serial_command_var.get().rstrip("\r\n")
+        if not command.strip():
+            message = "Command is empty; nothing sent"
+            self.serial_command_status_var.set(message)
+            with self.state_lock:
+                self.state.serial_command_status = message
+            return "break"
+
+        if not self.serial_stream_active():
+            message = "Serial not connected; command not sent"
+            self.serial_command_status_var.set(message)
+            with self.state_lock:
+                self.state.serial_command_status = message
+            return "break"
+
+        self.command_queue.put(command)
+        message = f"Queued: {command}"
+        self.serial_command_status_var.set(message)
+        with self.state_lock:
+            self.state.serial_command_status = message
+        self.serial_command_var.set("")
+        return "break"
 
     def request_new_log_file(self) -> None:
         with self.state_lock:
@@ -2778,6 +2867,32 @@ class BMSGuiApp:
             text="Start New Log File",
             command=self.request_new_log_file,
         ).pack(side="left", padx=(0, 6))
+
+        command_controls = ttk.LabelFrame(left_panel, text="Serial Command")
+        command_controls.pack(fill="x", pady=(0, 6))
+        command_controls.columnconfigure(0, weight=1)
+
+        self.serial_command_var = tk.StringVar()
+        self.serial_command_status_var = tk.StringVar(value="Enter a BMS command and press Send")
+
+        self.serial_command_entry = ttk.Entry(
+            command_controls,
+            textvariable=self.serial_command_var,
+        )
+        self.serial_command_entry.grid(row=0, column=0, sticky="we", padx=(4, 4), pady=(4, 2))
+        self.serial_command_entry.bind("<Return>", self.send_serial_command)
+
+        ttk.Button(
+            command_controls,
+            text="Send",
+            command=self.send_serial_command,
+        ).grid(row=0, column=1, sticky="e", padx=(0, 4), pady=(4, 2))
+
+        ttk.Label(
+            command_controls,
+            textvariable=self.serial_command_status_var,
+            wraplength=360,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 4))
 
         self.build_status_panel(left_panel)
 
@@ -3747,6 +3862,12 @@ class BMSGuiApp:
             self.vars["log"].set(str(state.log_path) if state.log_path else "NaN")
             if "log_status" in self.vars:
                 self.vars["log_status"].set(state.log_status)
+            if hasattr(self, "serial_command_status_var"):
+                command_status = state.serial_command_status
+                if state.last_serial_command_sent_time is not None:
+                    age_s = now - state.last_serial_command_sent_time
+                    command_status = f"{command_status} ({age_s:.1f}s ago)"
+                self.serial_command_status_var.set(command_status)
 
             for key in [
                 "pack_voltage_v",
@@ -3979,6 +4100,7 @@ def main() -> int:
     lock = threading.RLock()
     stop_event = threading.Event()
     status_queue: "queue.Queue[str]" = queue.Queue()
+    command_queue: "queue.Queue[str]" = queue.Queue()
 
     worker = SerialWorker(
         state=state,
@@ -3988,13 +4110,14 @@ def main() -> int:
         baud=args.baud,
         log_dir=Path(args.log_dir),
         status_queue=status_queue,
+        command_queue=command_queue,
         raw_echo=args.raw,
         auto_port=args.auto,
     )
     worker.start()
 
     root = tk.Tk()
-    app = BMSGuiApp(root, state, lock, stop_event, left_image, right_image)
+    app = BMSGuiApp(root, state, lock, stop_event, command_queue, left_image, right_image)
     app.status_queue = status_queue
     root.mainloop()
 

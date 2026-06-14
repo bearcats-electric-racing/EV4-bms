@@ -447,6 +447,10 @@ void setup() {
       } else if (input == "debug") {
         mode = "debug";
         break;
+      }else if (input == "drive"){
+        can.setBaudRate(500000);
+        mode = "drive";
+        break;
       }
     
       
@@ -1028,14 +1032,26 @@ void read_register_group(uint16_t command, uint8_t response[num_boards][6]) {  /
           wakeup_sleep(NUM_BOARDS + 1);
       }
       */
-
       //Debug Print
-      // if(debug){
-      //   Serial.print("response PEC ");
-      //   Serial.println(rx_pec10, HEX);
-      //   Serial.print("calculated PEC ");
-      //   Serial.println(calc_pec10, HEX);
-      // }
+      if(debug){
+        if(i == 0){
+          Serial.print("===========================New Set of Readings===========================\n");
+        }
+        Serial.print("I:");
+        Serial.print(i);
+        Serial.print(" | response PEC ");
+        Serial.println(rx_pec10, HEX);
+        Serial.print("I:");
+        Serial.print(i);
+        Serial.print(" | calculated PEC ");
+        Serial.println(calc_pec10, HEX);
+        if(rx_pec10 != calc_pec10){
+          Serial.print("I:");
+          Serial.print(i);
+          Serial.print(" | PEC Mismatch! #FUCKED UP#");
+        }
+        
+      }
 
       if(rx_pec10 != calc_pec10){
         isoSPI_fault = 1;
