@@ -1035,7 +1035,7 @@ void read_register_group(uint16_t command, uint8_t response[num_boards][6]) {  /
       //Debug Print
       if(debug){
         if(i == 0){
-          Serial.print("===========================New Set of Readings===========================\n");
+          Serial.println("===========================New Set of Readings===========================\n");
         }
         Serial.print("I:");
         Serial.print(i);
@@ -1048,7 +1048,7 @@ void read_register_group(uint16_t command, uint8_t response[num_boards][6]) {  /
         if(rx_pec10 != calc_pec10){
           Serial.print("I:");
           Serial.print(i);
-          Serial.print(" | PEC Mismatch! #FUCKED UP#");
+          Serial.print(" | PEC Mismatch! FUCKED UP /n");
         }
         
       }
@@ -1458,6 +1458,9 @@ bool reset_watchdog() {  //this needs to clear the voltage and temperature measu
   digitalWrite(20, HIGH);
   wdt.feed();
   //Serial.println("Watchdog fed");
+  // if(Fuck_sense_values > 0){
+  //   Fuck_sense_values--;
+  // } 
   return true;
 }
 
