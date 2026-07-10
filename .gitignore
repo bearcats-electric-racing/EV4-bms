@@ -2,7 +2,7 @@ node_modules/
 data/
 package*
 .pio/
-.vscode/
 build/
 BMS_Serial_Laptop_Recieved/
 .venv
+config.bat

@@ -13,8 +13,9 @@ Install:
   python -m pip install pyserial pillow
 
 Run:
-  python tools\bms_serial_gui.py --auto --baud 115200
-  python bms_serial_gui.py --port COM7 --baud 115200
+  python tools\bms_serial_gui_LIVE_PLAYBACK.py --auto --baud 115200
+  python tools\bms_serial_gui_LIVE_PLAYBACK.py --port COM7 --baud 115200
+  python tools\bms_serial_gui_LIVE_PLAYBACK.py --playback-csv BMS_Serial_2026-06-22_14-39-54.csv
 """
 
 from __future__ import annotations
@@ -34,17 +35,28 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from tkinter import ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Any, Optional
+
+from serial import Serial
 
 try:
     import serial
     from serial.tools import list_ports
 except ImportError:
+    # Playback mode does not need pyserial.  Keep import failure non-fatal so a
+    # saved CSV can still be reviewed on a machine without a serial adapter.
+    serial = None  # type: ignore[assignment]
+    list_ports = None  # type: ignore[assignment]
+
+
+def require_pyserial() -> bool:
+    if serial is not None and list_ports is not None:
+        return True
     print("Missing dependency: pyserial")
     print("Install it with:")
     print("  python -m pip install pyserial")
-    raise SystemExit(2)
+    return False
 
 try:
     from PIL import Image, ImageTk
@@ -210,6 +222,16 @@ KNOWN_EVENT_LINES = {
     "done",
     "serial dump done",
 }
+
+# Quick-command buttons shown above the free-form Serial Command box.  These
+# commands are queued through the same serial command path as typed text, so if
+# firmware command strings change later this list is the only place to edit.
+SERIAL_MODE_COMMANDS = [
+    ("Standby", "standby"),
+    ("Charge", "charge"),
+    ("Drive", "drive"),
+    ("Debug", "debug"),
+]
 
 SUPPRESS_RECENT_EVENT_TYPES = {
     "can_tx",
@@ -1220,6 +1242,8 @@ def process_line(line: str, now: float, state: MonitorState) -> dict[str, Any]:
 
 
 def list_serial_ports() -> list[Any]:
+    if not require_pyserial():
+        return []
     ports = list(list_ports.comports())
     if not ports:
         print("No serial ports found.")
@@ -1240,6 +1264,8 @@ def serial_port_candidates() -> list[str]:
     Teensy/USB/Arduino-style ports and pushes Bluetooth-style virtual ports to
     the bottom.
     """
+    if not require_pyserial():
+        return []
     ports = list(list_ports.comports())
     if not ports:
         return []
@@ -1484,7 +1510,7 @@ class SerialWorker(threading.Thread):
         with self.state_lock:
             self.state.log_status = text
 
-    def _write_pending_commands(self, ser: serial.Serial) -> None:
+    def _write_pending_commands(self, ser: Serial.Serial) -> None:
         """Write GUI-entered serial commands from the worker thread.
 
         The Tkinter GUI must not write to pyserial directly because the serial
@@ -1761,6 +1787,409 @@ class SerialWorker(threading.Thread):
             with self.state_lock:
                 self.state.serial_status = "Stopped" if self.stop_event.is_set() else "Logger stopped"
                 self.state.log_status = "Log file closed"
+
+
+class PlaybackWorker(threading.Thread):
+    """Replay a previously logged BMS CSV into the same parser/dashboard.
+
+    The logger stores the original serial text in the raw_line column and the
+    original relative time in elapsed_s.  Replaying raw_line keeps the playback
+    path honest: the GUI sees the exact same text that arrived from the Teensy,
+    so all existing parsing, alerts, dials, maps, and graphs are reused.
+    """
+
+    def __init__(
+        self,
+        state: MonitorState,
+        state_lock: threading.RLock,
+        stop_event: threading.Event,
+        csv_path: Path,
+        log_dir: Path,
+        status_queue: "queue.Queue[str]",
+        raw_echo: bool = False,
+        realtime: bool = True,
+        speed: float = 1.0,
+        loop: bool = False,
+        write_log: bool = False,
+    ) -> None:
+        super().__init__(daemon=True)
+        self.state = state
+        self.state_lock = state_lock
+        self.stop_event = stop_event
+        self.csv_path = csv_path
+        self.log_dir = log_dir
+        self.status_queue = status_queue
+        self.raw_echo = raw_echo
+        self.realtime = realtime
+        self.speed = max(0.0, float(speed))
+        self.loop = loop
+        self.write_log = write_log
+
+    def _make_log_path(self) -> Path:
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        base = self.log_dir / f"BMS_Serial_Replay_{timestamp}.csv"
+        if not base.exists():
+            return base
+
+        for index in range(1, 1000):
+            candidate = self.log_dir / f"BMS_Serial_Replay_{timestamp}_{index:03d}.csv"
+            if not candidate.exists():
+                return candidate
+        return self.log_dir / f"BMS_Serial_Replay_{timestamp}_{int(time.time() * 1000)}.csv"
+
+    def _open_log_file(self) -> tuple[Optional[Any], Optional[csv.DictWriter]]:
+        if not self.write_log:
+            with self.state_lock:
+                self.state.log_path = None
+                self.state.log_status = "Playback mode: not writing a new CSV log"
+            return None, None
+
+        log_path = self._make_log_path()
+        f = log_path.open("w", newline="", encoding="utf-8")
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        f.flush()
+        with self.state_lock:
+            self.state.log_path = log_path
+            self.state.log_status = f"Replay logging to {log_path.name}"
+        self.status_queue.put(f"Replay logging to {log_path}")
+        return f, writer
+
+    def _close_log_file(self, log_file: Optional[Any]) -> None:
+        if log_file is None:
+            return
+        try:
+            log_file.flush()
+        except Exception:
+            pass
+        try:
+            os.fsync(log_file.fileno())
+        except Exception:
+            pass
+        try:
+            closed_path = Path(log_file.name)
+        except Exception:
+            closed_path = None
+        try:
+            log_file.close()
+        except Exception:
+            pass
+        if closed_path is not None:
+            with self.state_lock:
+                self.state.last_closed_log_path = closed_path
+                self.state.log_status = f"Closed replay log {closed_path.name}"
+
+    @staticmethod
+    def _elapsed_from_row(row: dict[str, Any]) -> Optional[float]:
+        raw = row.get("elapsed_s", "")
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _line_from_row(row: dict[str, Any], line_column: str) -> str:
+        raw = row.get(line_column, "")
+        if raw is None:
+            return ""
+        return str(raw).rstrip("\r\n")
+
+    def _playback_rows(
+        self,
+        writer: Optional[csv.DictWriter],
+        log_file: Optional[Any],
+    ) -> int:
+        line_times: deque[float] = deque(maxlen=5000)
+        replayed_count = 0
+        last_elapsed: Optional[float] = None
+        last_flush = time.time()
+
+        with self.csv_path.open("r", newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames or []
+            if "raw_line" in fieldnames:
+                line_column = "raw_line"
+            elif "line" in fieldnames:
+                line_column = "line"
+            elif "serial_line" in fieldnames:
+                line_column = "serial_line"
+            else:
+                raise ValueError(
+                    "Playback CSV must contain a raw_line column from the BMS logger"
+                )
+
+            for row in reader:
+                if self.stop_event.is_set():
+                    break
+
+                elapsed = self._elapsed_from_row(row)
+                if self.realtime and elapsed is not None and last_elapsed is not None:
+                    delay_s = elapsed - last_elapsed
+                    if self.speed > 0.0:
+                        delay_s /= self.speed
+                    else:
+                        delay_s = 0.0
+                    if delay_s > 0.0 and self.stop_event.wait(delay_s):
+                        break
+                last_elapsed = elapsed
+
+                line = self._line_from_row(row, line_column)
+                now = time.time()
+                if self.raw_echo:
+                    print(line)
+
+                with self.state_lock:
+                    parsed_row = process_line(line, now, self.state)
+                    self.state.last_serial_line_time = now
+                    self.state.serial_status = (
+                        f"Playing back {self.csv_path.name}"
+                        f" ({replayed_count + 1} lines, {self.speed:g}x)"
+                    )
+
+                if writer is not None:
+                    writer.writerow(parsed_row)
+
+                line_times.append(now)
+                while line_times and now - line_times[0] > 1.0:
+                    line_times.popleft()
+                with self.state_lock:
+                    self.state.raw_line_rate_hz = float(len(line_times))
+
+                replayed_count += 1
+                if log_file is not None and now - last_flush >= 1.0:
+                    log_file.flush()
+                    last_flush = now
+
+        return replayed_count
+
+    def run(self) -> None:
+        global START_TIME
+
+        log_file: Optional[Any] = None
+        writer: Optional[csv.DictWriter] = None
+        total_replayed = 0
+        passes = 0
+
+        with self.state_lock:
+            START_TIME = self.state.start_time
+            self.state.serial_status = f"Opening playback CSV: {self.csv_path}"
+            self.state.last_serial_line_time = None
+            self.state.raw_line_rate_hz = 0.0
+        self.status_queue.put(f"Opening playback CSV: {self.csv_path}")
+
+        try:
+            log_file, writer = self._open_log_file()
+
+            while not self.stop_event.is_set():
+                passes += 1
+                count = self._playback_rows(writer, log_file)
+                total_replayed += count
+
+                if not self.loop or self.stop_event.is_set():
+                    break
+
+                with self.state_lock:
+                    self.state.serial_status = (
+                        f"Looping playback {self.csv_path.name}; completed pass {passes}"
+                    )
+                self.status_queue.put(
+                    f"Looping playback {self.csv_path.name}; completed pass {passes}"
+                )
+
+            if self.stop_event.is_set():
+                final_status = f"Playback stopped after {total_replayed} lines"
+            else:
+                final_status = f"Playback finished: {total_replayed} lines from {self.csv_path.name}"
+
+            with self.state_lock:
+                self.state.serial_status = final_status
+                self.state.raw_line_rate_hz = 0.0
+                self.state.last_serial_line_time = None
+            self.status_queue.put(final_status)
+
+        except Exception as exc:
+            error_status = f"Playback error: {exc}"
+            with self.state_lock:
+                self.state.serial_status = error_status
+                self.state.raw_line_rate_hz = 0.0
+                self.state.last_serial_line_time = None
+            self.status_queue.put(error_status)
+
+        finally:
+            self._close_log_file(log_file)
+
+
+def reset_monitor_state_in_place(state: MonitorState) -> None:
+    """Reset the dashboard data while keeping the same object referenced by the GUI."""
+    fresh = MonitorState()
+    state.__dict__.clear()
+    state.__dict__.update(fresh.__dict__)
+
+
+class WorkerController:
+    """Start/stop live serial and CSV playback workers from GUI controls."""
+
+    def __init__(
+        self,
+        state: MonitorState,
+        state_lock: threading.RLock,
+        status_queue: "queue.Queue[str]",
+        command_queue: "queue.Queue[str]",
+        log_dir: Path,
+        baud: int,
+        port: Optional[str],
+        auto_port: bool,
+        raw_echo: bool = False,
+    ) -> None:
+        self.state = state
+        self.state_lock = state_lock
+        self.status_queue = status_queue
+        self.command_queue = command_queue
+        self.log_dir = log_dir
+        self.baud = baud
+        self.port = port
+        self.auto_port = auto_port
+        self.raw_echo = raw_echo
+        self._lock = threading.RLock()
+        self.current_worker: Optional[threading.Thread] = None
+        self.current_stop_event: Optional[threading.Event] = None
+        self.worker_kind = "idle"
+        self.selected_playback_csv: Optional[Path] = None
+
+    def mode_summary(self) -> str:
+        with self._lock:
+            if self.worker_kind == "live":
+                if self.auto_port:
+                    return f"Mode: Live serial, auto port @ {self.baud}"
+                return f"Mode: Live serial, {self.port or 'no port'} @ {self.baud}"
+            if self.worker_kind == "playback":
+                name = self.selected_playback_csv.name if self.selected_playback_csv else "CSV"
+                return f"Mode: CSV playback — {name}"
+            return "Mode: Idle"
+
+    def _set_status(self, text: str) -> None:
+        with self.state_lock:
+            self.state.serial_status = text
+            self.state.raw_line_rate_hz = 0.0
+            self.state.last_serial_line_time = None
+        self.status_queue.put(text)
+
+    def stop_current(self, reset_status: bool = True) -> None:
+        with self._lock:
+            worker = self.current_worker
+            stop_event = self.current_stop_event
+            self.current_worker = None
+            self.current_stop_event = None
+            old_kind = self.worker_kind
+            self.worker_kind = "idle"
+
+        if stop_event is not None:
+            stop_event.set()
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=1.5)
+
+        if reset_status:
+            self._set_status(f"Stopped {old_kind} worker" if old_kind != "idle" else "Idle")
+
+    def start_serial(
+        self,
+        port: Optional[str] = None,
+        auto_port: Optional[bool] = None,
+        baud: Optional[int] = None,
+    ) -> bool:
+        if not require_pyserial():
+            self._set_status("Cannot start live serial: pyserial is not installed")
+            return False
+
+        chosen_port = port if port is not None else self.port
+        chosen_auto = self.auto_port if auto_port is None else auto_port
+        chosen_baud = self.baud if baud is None else baud
+
+        if not chosen_port and not chosen_auto:
+            # GUI-launched live mode should be useful even when the script was
+            # opened with no command-line port.  Default to the auto-retry path.
+            chosen_auto = True
+
+        self.stop_current(reset_status=False)
+        with self.state_lock:
+            reset_monitor_state_in_place(self.state)
+            self.state.serial_status = "Starting live serial..."
+            self.state.log_status = "Opening live log file..."
+
+        stop_event = threading.Event()
+        worker = SerialWorker(
+            state=self.state,
+            state_lock=self.state_lock,
+            stop_event=stop_event,
+            port=chosen_port,
+            baud=chosen_baud,
+            log_dir=self.log_dir,
+            status_queue=self.status_queue,
+            command_queue=self.command_queue,
+            raw_echo=self.raw_echo,
+            auto_port=chosen_auto,
+        )
+
+        with self._lock:
+            self.current_stop_event = stop_event
+            self.current_worker = worker
+            self.worker_kind = "live"
+            self.port = chosen_port
+            self.auto_port = chosen_auto
+            self.baud = chosen_baud
+        worker.start()
+        self.status_queue.put("Started live serial mode")
+        return True
+
+    def start_playback(
+        self,
+        csv_path: Path,
+        realtime: bool = True,
+        speed: float = 1.0,
+        loop: bool = False,
+        write_log: bool = False,
+    ) -> bool:
+        path = Path(csv_path).expanduser()
+        if not path.exists():
+            self._set_status(f"Playback CSV not found: {path}")
+            return False
+        if speed < 0.0:
+            self._set_status("Playback speed must be 0 or greater")
+            return False
+
+        self.stop_current(reset_status=False)
+        with self.state_lock:
+            reset_monitor_state_in_place(self.state)
+            self.state.serial_status = f"Starting playback: {path.name}"
+            self.state.log_status = "Playback mode starting..."
+
+        stop_event = threading.Event()
+        worker = PlaybackWorker(
+            state=self.state,
+            state_lock=self.state_lock,
+            stop_event=stop_event,
+            csv_path=path,
+            log_dir=self.log_dir,
+            status_queue=self.status_queue,
+            raw_echo=self.raw_echo,
+            realtime=realtime,
+            speed=speed,
+            loop=loop,
+            write_log=write_log,
+        )
+
+        with self._lock:
+            self.current_stop_event = stop_event
+            self.current_worker = worker
+            self.worker_kind = "playback"
+            self.selected_playback_csv = path
+        worker.start()
+        self.status_queue.put(f"Started CSV playback: {path}")
+        return True
+
+    def shutdown(self) -> None:
+        self.stop_current(reset_status=False)
 
 
 class Dial(ttk.Frame):
@@ -2732,12 +3161,16 @@ class BMSGuiApp:
         command_queue: "queue.Queue[str]",
         left_image: Path,
         right_image: Path,
+        worker_controller: WorkerController,
+        initial_playback_csv: Optional[Path] = None,
     ) -> None:
         self.root = root
         self.state = state
         self.state_lock = state_lock
         self.stop_event = stop_event
         self.command_queue = command_queue
+        self.worker_controller = worker_controller
+        self.selected_playback_csv: Optional[Path] = initial_playback_csv
         self.status_queue: "queue.Queue[str]" = queue.Queue()
         self.selected_pair = tk.IntVar(value=1)
         self.overlay_filter = tk.StringVar(value="minmax")
@@ -2819,6 +3252,79 @@ class BMSGuiApp:
             self.state.log_status = f"New log requested; closing {current_log}..."
         self.status_queue.put("Manual log rollover requested")
 
+    def _short_playback_path(self, path: Optional[Path]) -> str:
+        if path is None:
+            return "No CSV selected"
+        try:
+            return str(path) if len(str(path)) <= 56 else f"...{str(path)[-53:]}"
+        except Exception:
+            return str(path)
+
+    def select_playback_csv(self) -> None:
+        initial_dir = self.worker_controller.log_dir
+        if self.selected_playback_csv is not None:
+            initial_dir = self.selected_playback_csv.parent
+        filename = filedialog.askopenfilename(
+            parent=self.root,
+            title="Select BMS playback CSV",
+            initialdir=str(initial_dir) if initial_dir.exists() else str(Path.cwd()),
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not filename:
+            return
+        self.selected_playback_csv = Path(filename)
+        self.playback_csv_var.set(self._short_playback_path(self.selected_playback_csv))
+        self.source_status_var.set(f"Selected: {self.selected_playback_csv.name}")
+
+    def _playback_speed(self) -> Optional[float]:
+        raw = self.playback_speed_var.get().strip()
+        try:
+            speed = float(raw)
+        except ValueError:
+            messagebox.showerror("Invalid playback speed", "Playback speed must be a number. Use 1.0 for realtime, 10 for 10x, or 0 for fastest.")
+            return None
+        if speed < 0.0:
+            messagebox.showerror("Invalid playback speed", "Playback speed must be 0 or greater.")
+            return None
+        return speed
+
+    def start_selected_playback(self) -> None:
+        if self.selected_playback_csv is None:
+            self.select_playback_csv()
+            if self.selected_playback_csv is None:
+                return
+        speed = self._playback_speed()
+        if speed is None:
+            return
+        ok = self.worker_controller.start_playback(
+            self.selected_playback_csv,
+            realtime=bool(self.playback_realtime_var.get()),
+            speed=speed,
+            loop=bool(self.playback_loop_var.get()),
+            write_log=bool(self.playback_log_var.get()),
+        )
+        if ok:
+            self.source_status_var.set(self.worker_controller.mode_summary())
+
+    def start_live_serial_from_gui(self) -> None:
+        ok = self.worker_controller.start_serial()
+        if ok:
+            self.source_status_var.set(self.worker_controller.mode_summary())
+
+    def stop_data_source_from_gui(self) -> None:
+        self.worker_controller.stop_current(reset_status=True)
+        self.source_status_var.set(self.worker_controller.mode_summary())
+
+    def send_mode_command(self, command: str) -> None:
+        self.serial_command_var.set(command)
+        self.send_serial_command()
+
+    def refresh_source_controls(self) -> None:
+        if hasattr(self, "source_status_var"):
+            self.source_status_var.set(self.worker_controller.mode_summary())
+        if hasattr(self, "playback_csv_var") and self.selected_playback_csv is not None:
+            self.playback_csv_var.set(self._short_playback_path(self.selected_playback_csv))
+
     def make_var(self, name: str, default: str = "NaN") -> tk.StringVar:
         v = tk.StringVar(value=default)
         self.vars[name] = v
@@ -2867,6 +3373,57 @@ class BMSGuiApp:
             text="Start New Log File",
             command=self.request_new_log_file,
         ).pack(side="left", padx=(0, 6))
+
+        source_controls = ttk.LabelFrame(left_panel, text="Data Source / Playback")
+        source_controls.pack(fill="x", pady=(0, 6))
+        source_controls.columnconfigure(1, weight=1)
+
+        self.source_status_var = tk.StringVar(value=self.worker_controller.mode_summary())
+        self.playback_csv_var = tk.StringVar(value=self._short_playback_path(self.selected_playback_csv))
+        self.playback_speed_var = tk.StringVar(value="1.0")
+        self.playback_loop_var = tk.BooleanVar(value=False)
+        self.playback_realtime_var = tk.BooleanVar(value=True)
+        self.playback_log_var = tk.BooleanVar(value=False)
+
+        ttk.Label(source_controls, textvariable=self.source_status_var).grid(
+            row=0, column=0, columnspan=4, sticky="w", padx=4, pady=(4, 2)
+        )
+
+        source_buttons = ttk.Frame(source_controls)
+        source_buttons.grid(row=1, column=0, columnspan=4, sticky="we", padx=4, pady=(2, 2))
+        ttk.Button(source_buttons, text="Live Serial", command=self.start_live_serial_from_gui).pack(side="left", padx=(0, 4))
+        ttk.Button(source_buttons, text="Select CSV...", command=self.select_playback_csv).pack(side="left", padx=(0, 4))
+        ttk.Button(source_buttons, text="Play CSV", command=self.start_selected_playback).pack(side="left", padx=(0, 4))
+        ttk.Button(source_buttons, text="Stop", command=self.stop_data_source_from_gui).pack(side="left", padx=(0, 4))
+
+        ttk.Label(source_controls, text="File:").grid(row=2, column=0, sticky="w", padx=(4, 2), pady=(2, 2))
+        ttk.Label(source_controls, textvariable=self.playback_csv_var, wraplength=360).grid(
+            row=2, column=1, columnspan=3, sticky="we", padx=(0, 4), pady=(2, 2)
+        )
+
+        ttk.Label(source_controls, text="Speed:").grid(row=3, column=0, sticky="w", padx=(4, 2), pady=(2, 4))
+        ttk.Entry(source_controls, textvariable=self.playback_speed_var, width=6).grid(
+            row=3, column=1, sticky="w", padx=(0, 8), pady=(2, 4)
+        )
+        ttk.Checkbutton(source_controls, text="Realtime", variable=self.playback_realtime_var).grid(
+            row=3, column=2, sticky="w", padx=(0, 8), pady=(2, 4)
+        )
+        ttk.Checkbutton(source_controls, text="Loop", variable=self.playback_loop_var).grid(
+            row=3, column=3, sticky="w", padx=(0, 4), pady=(2, 4)
+        )
+        ttk.Checkbutton(source_controls, text="Log replay to new CSV", variable=self.playback_log_var).grid(
+            row=4, column=0, columnspan=4, sticky="w", padx=4, pady=(0, 4)
+        )
+
+        mode_controls = ttk.Frame(source_controls)
+        mode_controls.grid(row=5, column=0, columnspan=4, sticky="w", padx=4, pady=(0, 4))
+        ttk.Label(mode_controls, text="BMS mode:").pack(side="left", padx=(0, 4))
+        for label, command in SERIAL_MODE_COMMANDS:
+            ttk.Button(
+                mode_controls,
+                text=label,
+                command=lambda c=command: self.send_mode_command(c),
+            ).pack(side="left", padx=(0, 4))
 
         command_controls = ttk.LabelFrame(left_panel, text="Serial Command")
         command_controls.pack(fill="x", pady=(0, 6))
@@ -3868,6 +4425,7 @@ class BMSGuiApp:
                     age_s = now - state.last_serial_command_sent_time
                     command_status = f"{command_status} ({age_s:.1f}s ago)"
                 self.serial_command_status_var.set(command_status)
+            self.refresh_source_controls()
 
             for key in [
                 "pack_voltage_v",
@@ -4035,6 +4593,7 @@ class BMSGuiApp:
 
     def on_close(self) -> None:
         self.stop_event.set()
+        self.worker_controller.shutdown()
         self.root.after(150, self.root.destroy)
 
 
@@ -4066,28 +4625,39 @@ def main() -> int:
     parser.add_argument("--left-image", help="Path to Left_Side_Module.png")
     parser.add_argument("--right-image", help="Path to Right_Side_Module.png")
     parser.add_argument("--raw", action="store_true", help="Also echo every raw serial line to the console")
+    parser.add_argument("--playback-csv", help="Replay a previously logged BMS CSV file instead of opening a serial port")
+    parser.add_argument("--playback-speed", type=float, default=1.0, help="CSV playback speed multiplier. 1.0 = original timing, 2.0 = twice as fast, 0 = fastest")
+    parser.add_argument("--playback-loop", action="store_true", help="Loop the playback CSV until the GUI is closed")
+    parser.add_argument("--playback-no-realtime", action="store_true", help="Replay rows as fast as possible instead of preserving elapsed_s timing")
+    parser.add_argument("--playback-log", action="store_true", help="Write a new parsed CSV while replaying the old one")
     args = parser.parse_args()
 
     if args.list:
         list_serial_ports()
         return 0
 
+    playback_csv: Optional[Path] = None
+    if args.playback_csv:
+        playback_csv = Path(args.playback_csv)
+        if not playback_csv.exists():
+            print(f"Playback CSV not found: {playback_csv}")
+            return 2
+        if args.playback_speed < 0.0:
+            print("--playback-speed must be 0 or greater")
+            return 2
+
     port = args.port
-    if not port and args.auto:
-        port = auto_select_port()
+    auto_requested = bool(args.auto)
+    if playback_csv is None and (port or auto_requested):
+        if not require_pyserial():
+            return 2
 
-    if not port and not args.auto:
-        print("No serial port selected.")
-        print()
-        list_serial_ports()
-        print()
-        print("Examples:")
-        print("  python bms_serial_gui.py --port COM7 --baud 115200")
-        print("  python bms_serial_gui.py --auto --baud 115200")
-        return 2
-
-    if not port and args.auto:
-        print("No serial port found yet. The GUI will stay open and retry automatically.")
+        if not port and auto_requested:
+            port = auto_select_port()
+            if not port:
+                print("No serial port found yet. The GUI will stay open and retry automatically.")
+    elif playback_csv is None:
+        print("Starting GUI idle. Use Live Serial or Select CSV from the Data Source / Playback panel.")
 
     try:
         left_image = resolve_image_path(args.left_image, "Left_Side_Module.png")
@@ -4102,27 +4672,51 @@ def main() -> int:
     status_queue: "queue.Queue[str]" = queue.Queue()
     command_queue: "queue.Queue[str]" = queue.Queue()
 
-    worker = SerialWorker(
+    log_dir = Path(args.log_dir)
+    controller = WorkerController(
         state=state,
         state_lock=lock,
-        stop_event=stop_event,
-        port=port,
-        baud=args.baud,
-        log_dir=Path(args.log_dir),
         status_queue=status_queue,
         command_queue=command_queue,
+        log_dir=log_dir,
+        baud=args.baud,
+        port=port,
+        auto_port=args.auto or not bool(port),
         raw_echo=args.raw,
-        auto_port=args.auto,
     )
-    worker.start()
+
+    if playback_csv is not None:
+        controller.start_playback(
+            playback_csv,
+            realtime=not args.playback_no_realtime,
+            speed=args.playback_speed,
+            loop=args.playback_loop,
+            write_log=args.playback_log,
+        )
+    elif port or args.auto:
+        controller.start_serial(port=port, auto_port=args.auto, baud=args.baud)
+    else:
+        with lock:
+            state.serial_status = "Idle: choose Live Serial or Select CSV in the GUI"
+            state.log_status = "No data source selected"
 
     root = tk.Tk()
-    app = BMSGuiApp(root, state, lock, stop_event, command_queue, left_image, right_image)
+    app = BMSGuiApp(
+        root,
+        state,
+        lock,
+        stop_event,
+        command_queue,
+        left_image,
+        right_image,
+        controller,
+        playback_csv,
+    )
     app.status_queue = status_queue
     root.mainloop()
 
     stop_event.set()
-    worker.join(timeout=1.0)
+    controller.shutdown()
     return 0
 
 
